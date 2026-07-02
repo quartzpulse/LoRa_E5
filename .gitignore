@@ -1,0 +1,18 @@
+.venv/
+external
+**/build*/
+.vscode/compile_commands.json
+.vscode/extensions.json
+/modules/*
+!/modules/lora_e5/
+
+# Python
+/.venv/
+/venv/
+__pycache__/
+*.pyc
+
+# Build / test output
+/build/
+**/build/
+twister-out*/

@@ -1,0 +1,62 @@
+<mxfile host="app.diagrams.net" modified="2026-07-01T00:00:00.000Z" agent="claude" version="24.0.0" type="device">
+  <diagram name="Layered Architecture v2" id="layered-arch-v2">
+    <mxGraphModel dx="1400" dy="1000" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1000" pageHeight="1500" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="app" value="Application" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#dae8fc;strokeColor=#6c8ebf;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="300" y="20" width="400" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="api" value="Public API — lora_e5.c / lora_e5.h&#10;join()/send()/reset()/sleep()/wake()/at_raw()" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d5e8d4;strokeColor=#82b366;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="270" y="110" width="460" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="fsm" value="LoRaWAN FSM — lora_e5_fsm.c&#10;pure state logic, ZERO AT vocabulary&#10;knows only: JOIN / SEND / RESET / SLEEP / WAKE" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffe6cc;strokeColor=#d79b00;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="220" y="220" width="560" height="70" as="geometry" />
+        </mxCell>
+
+        <mxCell id="evt" value="Event Bus&#10;lora_e5_events.c" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#fff2cc;strokeColor=#d6b656;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="820" y="220" width="150" height="70" as="geometry" /></mxCell>
+
+        <mxCell id="mm" value="Modem Manager — lora_e5_hf_modem.c (NEW)&#10;translates abstract intent -&gt; command descriptor table&#10;classifies URCs (JOIN/MSG/CMSG) before forwarding to FSM&#10;owns capability queries (max payload, version, ids)&#10;THE ONLY LAYER THAT KNOWS THE AT COMMAND SET" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#d4f1f4;strokeColor=#0e8088;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="180" y="330" width="640" height="90" as="geometry" />
+        </mxCell>
+
+        <mxCell id="atmgr" value="AT Command Manager — lora_e5_at.c + lora_e5_cmd_queue.c&#10;protocol-generic transaction engine: queue, single in-flight,&#10;retry, timeout — executes whatever descriptor it is handed,&#10;no built-in knowledge of LoRa-E5 semantics" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f8cecc;strokeColor=#b85450;fontSize=12;" vertex="1" parent="1">
+          <mxGeometry x="220" y="460" width="560" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="parser" value="AT Parser (stateless) — lora_e5_parser.c&#10;line -&gt; generic AT event (OK/ERROR/raw URC line)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#e1d5e7;strokeColor=#9673a6;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="270" y="580" width="460" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="uart" value="UART Backend — lora_e5_uart.c&#10;UART Async API, ring_buf, RX work queue, TX serialization" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#f5f5f5;strokeColor=#666666;fontSize=13;" vertex="1" parent="1">
+          <mxGeometry x="270" y="680" width="460" height="60" as="geometry" />
+        </mxCell>
+
+        <mxCell id="hw" value="LoRa-E5-HF Module (UART, AT firmware)" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#ffffff;strokeColor=#000000;fontSize=13;dashed=1;" vertex="1" parent="1">
+          <mxGeometry x="300" y="780" width="400" height="50" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="app" target="api"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e2" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="api" target="fsm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="fsm" target="mm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="mm" target="atmgr"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e5" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="atmgr" target="parser"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e6" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;" edge="1" parent="1" source="parser" target="uart"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;" edge="1" parent="1" source="uart" target="hw"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="e8" value="abstract events&#10;(JOIN_SUCCESS, TX_SUCCESS,&#10;DOWNLINK_RECEIVED, RECOVERY_STATE)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;exitX=1;exitY=0.5;entryX=0.5;entryY=1;" edge="1" parent="1" source="fsm" target="evt"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e9" value="classified URC&#10;(no raw AT text)" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;exitX=0.9;exitY=0;entryX=0.95;entryY=1;" edge="1" parent="1" source="mm" target="fsm"><mxGeometry relative="1" as="geometry" /></mxCell>
+        <mxCell id="e10" value="callback" style="edgeStyle=orthogonalEdgeStyle;rounded=0;html=1;endArrow=block;dashed=1;exitX=0.85;exitY=0;entryX=0.7;entryY=1;" edge="1" parent="1" source="evt" target="api"><mxGeometry relative="1" as="geometry" /></mxCell>
+
+        <mxCell id="note" value="Same execution context (FSM work queue) —&#10;Modem Manager is a synchronous translation layer,&#10;NOT a 4th thread/work queue" style="text;html=1;align=left;fontSize=11;fontColor=#666666;fontStyle=2" vertex="1" parent="1">
+          <mxGeometry x="830" y="330" width="150" height="90" as="geometry" />
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

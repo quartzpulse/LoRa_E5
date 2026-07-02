@@ -1,0 +1,1 @@
+LoRa-E5 Zephyr library lives in modules/lora_e5/ — read modules/lora_e5/CLAUDE.md before working on it.

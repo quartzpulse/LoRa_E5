@@ -1,0 +1,6 @@
+tests:
+  lora_e5.cmd_queue:
+    platform_allow: native_sim
+    tags: lora_e5 cmd_queue
+    integration_platforms:
+      - native_sim
