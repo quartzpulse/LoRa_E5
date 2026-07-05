@@ -17,88 +17,27 @@ modeled by analogy; treat as probably wrong until checked.
 
 ## Blocking -- do not use in production without checking
 
-### 1. `AT+ID` SET syntax (lora_e5_hf_commands.c: `lora_e5_hf_build_id_set_eui()`)
-**[Guessing].** Modeled by analogy to `AT+KEY=APPKEY,<32-hex-chars>`
-(which IS confirmed -- plain contiguous hex, no colons). No capture
-in this review showed `AT+ID` used as a SET command; every capture
-showed it as a bare query only. The query's own response uses
-colon-separated hex (`+ID: DevAddr, 32:30:84:63`), which is a
-DIFFERENT format from `KEY`'s confirmed plain-hex set syntax -- these
-could plausibly use different conventions for set-vs-display, and I
-have no evidence either way for the set form specifically.
-**How to check:** send `AT+ID=DevEui,<hex>` on real hardware with
-`AT+LOG=DEBUG` enabled, capture the actual response/whether it's
-accepted at all (vs. an ERROR(-11) wrong-format rejection).
-
-### 2. `AT+LW=LEN` max-payload query (`lora_e5_hf_build_max_payload_query()`)
-**[Guessing], currently returns -ENOTSUP on purpose -- not wired to
-anything.** `AT+LW` is a documented multi-purpose command with
-subcommands CDR/ULDL/NET/DC/MC/THLD; whether "LEN" is a valid
-subcommand of it, or the max-payload value is exposed some other way
-entirely, was not re-confirmed against the primary PDF in this
-review pass.
-**How to check:** open the primary spec PDF directly (not a mirror/
-secondary source) at the `AT+LW` section (§4.x) and read the full
-subcommand list. If "LEN" isn't there, find whichever command
-actually exposes max payload (it may not exist at all as a queryable
-value -- Table 3-3's per-DR payload limits might be something this
-library has to hardcode per region+DR combination instead of
-querying).
+*(none remaining -- see "Resolved" sections below. Item 5, the
+port-caching gap, is now fully confirmed end-to-end over a real
+network and the fix already implemented in `lora_e5_mm_send()`.)*
 
 ---
 
 ## Non-blocking but flagged -- confirm before relying on exact wording
 
-### 3. Config-command echo format (MODE, DR, PORT, CLASS, REPT set commands)
-**[Likely].** Assumed to echo `"+CMD: VALUE"` back on success, by
-direct analogy to the ONE confirmed example (`AT+ADR=OFF` ->
-`+ADR: OFF`, from a captured Arduino library session log) plus the
-spec's own general `"+CMD: RETURN DATA"` convention statement
-(§2.3.3). Individual echoes for MODE/DR/PORT/CLASS/REPT were not
-each independently captured. Mitigated in code: these all use
-`LORA_E5_AT_MATCH_ANY_URC` (prefix-only matching), which resolves
-correctly regardless of the exact remainder text -- so this is lower
-risk than it would be with exact-remainder matching, but still worth
-confirming the prefix itself doesn't differ from expected.
-**How to check:** capture real responses for each with `AT+LOG=DEBUG`
-during a real CONFIG sequence.
-
-### 4. Six of twelve region strings (`lora_e5_hf_commands.c: region_strings[]`)
-**[Likely].** `EU868`/`US915`/`AU915`/`AS923`/`KR920`/`IN865` are
-**[Certain]** -- repeated across multiple independent sources in this
-review (Seeed's own product spec sheet, a Hackster tutorial).
-`US915HYBRID`/`CN779`/`EU433`/`AU915OLD`/`CN470`/`RU864` come from an
-earlier full-spec fetch in this conversation that could not be
-re-verified against visible primary-source text in this specific pass
--- the exact spelling (e.g. is it "AU915OLD" or "AU915_OLD"? Is
-"US915HYBRID" one word or hyphenated?) is unconfirmed.
-**How to check:** re-open the primary spec PDF, Table 3-1 (band plan
-list), and copy the literal strings verbatim.
-
-### 5. `AT+MSGHEX`/`AT+CMSGHEX` port parameter (`lora_e5_hf_build_send()`)
-**Not a syntax question -- a real behavioral gap, currently
-unhandled.** Every capture shows `AT+MSGHEX=<hex>` with no port
-argument; port is set once via a separate `AT+PORT=` transaction.
-`lora_e5_hf_build_send()`'s `port` parameter is currently a
-documented no-op. **This will silently send on the wrong port** if
-an application calls `lora_e5_send()` with a port differing from the
-last `AT+PORT=` value, with no error surfaced anywhere. Fix belongs
-in `lora_e5_modem_manager.c` (not yet written): cache last-configured
-port, reissue `AT+PORT=` before `AT+MSGHEX`/`AT+CMSGHEX` if the
-caller's requested port differs.
-
 ### 6. `AT+ID` query trailing terminator
-**[Certain the response is 3 lines; unconfirmed whether anything
-follows them.]** Resolved functionally via `required_matches = 3`
-(Phase 3) rather than needing a terminator -- but this assumes
-EXACTLY 3 `+ID:` lines are always returned. If a firmware revision
-ever adds a 4th field, this will hang until the 3-match requirement
-is met by 3 of 4 lines (probably still resolves correctly-ish since
-it just needs 3 occurrences of the prefix, but the 4th line would be
-consumed as a match toward a NEW transaction if one happens to be
-queued right after -- a low-probability but real edge case).
-**How to check:** capture `AT+ID` output against your actual firmware
-version and confirm line count.
+**[Certain the response is 3 lines on FW V4.0.11; unconfirmed whether
+a different firmware revision could add a 4th line.]** Real hardware
+capture 2026-07-05 (LoRa-E5-HF firmware V4.0.11) confirms exactly 3
+`+ID:` lines (DevAddr, DevEui, AppEui, same field order as the two
+prior captured logs) with nothing following. Resolved functionally via
+`required_matches = 3` (Phase 3) regardless. The residual risk is
+narrower now (confirmed on this specific firmware, not just inferred
+from captures of unknown firmware version) but not eliminated for
+*other* firmware revisions: if a future revision adds a 4th field,
+this would still need updating -- see the original concern above.
+**How to check:** re-capture against any firmware version other than
+V4.0.11 if/when one is available.
 
 ---
 
@@ -132,6 +71,24 @@ risk, just a reminder these fallbacks need to disappear once Kconfig
 is written -- the `#warning` is intentional so a real build using this
 file before Kconfig exists is loud about it, not silent.
 
+### 10. No line-text-capture path for successfully-matched terminal lines
+`struct lora_e5_at_result` (returned by `lora_e5_at_submit_sync()`)
+carries only `outcome`/`result_tag`/`error_code`/`user_data` -- never
+the actual matched line's text. This blocks
+`lora_e5_mm_get_version()`, `lora_e5_mm_get_ids()`, and (newly, this
+pass) `lora_e5_mm_get_max_payload()` from ever returning real
+`+VER:`/`+ID:`/`+LW: LEN,` values: the AT transaction can be confirmed
+successful, but the version string / IDs / payload length it carried
+back is unrecoverable under the current contract, so all three
+functions explicitly return `-ENOTSUP` rather than fabricate a value.
+This is a real capability gap, not a wrong-guess risk -- the wire
+formats these three depend on are now all **[Certain]** (see
+"Resolved this pass"). Fixing it means extending `lora_e5_at.h`'s
+result contract (e.g. a caller-supplied capture buffer) -- an API
+change to the AT Command Manager layer, flagging for your call since
+`lora_e5_at.c`/`lora_e5_cmd_queue.c` are meant to stay LoRaWAN-agnostic
+generic infrastructure (Non-negotiable decision #6 in CLAUDE.md).
+
 ---
 
 ## Resolved this pass
@@ -155,3 +112,48 @@ file before Kconfig exists is loud about it, not silent.
 - ~~`AT+ID` query 3-line shape and field order~~ -- **[Certain]**,
   confirmed via two independent captured logs, consistent field order
   (DevAddr, DevEui, AppEui) in both.
+
+## Resolved 2026-07-05 (real hardware: LoRa-E5-HF, firmware V4.0.11, `/dev/ttyUSB1`)
+
+- ~~`AT+ID` SET syntax~~ -- **[Certain]**. `AT+ID=DevEui,26C518F8EF840E5D`
+  (plain hex, no colons) accepted; echoed as
+  `+ID: DevEui, 26:C5:18:F8:EF:84:0E:5D` (colon-separated, matching the
+  query display format even though the SET argument is plain hex).
+  Round-tripped to the device's own existing value, no identity change.
+  Fixed doc comments in `lora_e5_hf_commands.c`/`.h`.
+- ~~`AT+LW=LEN` max-payload query~~ -- **[Certain]**. Returns
+  `+LW: LEN, 51` (device was on IN865/DR0 at capture time). Also
+  confirmed in the same session: `AT+LW=CDR` -> `+LW: CDR, TXDR(0,7),
+  RXDR(0,7)`; `AT+LW=ULDL` -> `+LW: ULDL, 0, 0`; `AT+LW=NET` ->
+  `+LW: NET, ON`; `AT+LW=DC` -> `+LW: DC, OFF, 0`; `AT+LW=MC` ->
+  `+LW: MC, OFF, 55b8da01, 0`; `AT+LW=THLD` -> `+LW: THLD, -85`. Bare
+  `AT+LW` (no subcommand) returns `ERROR(-1)`. Builder implemented in
+  `lora_e5_hf_commands.c`; `lora_e5_mm_get_max_payload()` still returns
+  `-ENOTSUP`, but now because of item 10 (line-capture gap), not
+  syntax uncertainty.
+- ~~Config-command echo format (MODE, DR, PORT, CLASS, REPT)~~ --
+  **[Certain]**. All five confirmed to echo `"+CMD: VALUE"`:
+  `AT+MODE=LWOTAA` -> `+MODE: LWOTAA`, `AT+PORT=8` -> `+PORT: 8`,
+  `AT+CLASS=A` -> `+CLASS: A`, `AT+REPT=1` -> `+REPT: 1`,
+  `AT+DR=IN865` -> `+DR: IN865` (region set, see below).
+- ~~Six of twelve region strings~~ (`US915HYBRID`/`CN779`/`EU433`/
+  `AU915OLD`/`CN470`/`RU864`) -- **[Certain]**. All six accepted
+  verbatim as spelled in `region_strings[]` (one word, no underscore --
+  `AT+DR=US915_HYBRID` and `AT+DR=AU915_OLD` were tried and both
+  rejected with `ERROR(-1)`, confirming the underscore-free spelling is
+  the correct one). Device reverted to its original `IN865` after the
+  test sequence.
+- ~~`AT+MSGHEX`/`AT+CMSGHEX` port parameter behavior~~ -- **[Certain]**,
+  confirmed end-to-end over a real network (real `AT+JOIN`, IN865,
+  ChirpStack). Sent 4 uplinks: `aa01` with `AT+PORT=5` just set ->
+  ChirpStack decoded `FPort: 5`; `aa02` with **no** `AT+PORT` reissued
+  (still 5) -> also `FPort: 5`; `aa03` with `AT+PORT=10` just set ->
+  `FPort: 10`; `aa04` with **no** reissue (still 10) -> also
+  `FPort: 10`. Conclusively proves the port is a persistent modem-side
+  setting, not a per-`AT+MSGHEX` argument -- a stale `AT+PORT` value
+  silently determines the wire port with no error surfaced. The fix
+  predicted here is already implemented in
+  `lora_e5_mm_send()` (`lora_e5_modem_manager.c`, `g_port_cached`/
+  `g_port_valid`, reissues `AT+PORT=` only when the caller's port
+  differs) -- this test empirically validates that fix was both
+  necessary and sufficient.

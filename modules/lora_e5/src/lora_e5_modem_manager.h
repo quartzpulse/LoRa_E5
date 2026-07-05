@@ -68,6 +68,19 @@ enum lora_e5_reset_backend {
  */
 enum lora_e5_mm_result_tag {
 	LORA_E5_MM_TAG_OK = 0,
+	LORA_E5_MM_TAG_GENERIC_ERROR,       /**< Used by the ANY_ERROR_ENTRY
+					      *   catch-all in every
+					      *   lora_e5_hf_commands.c
+					      *   terminal_events[] table --
+					      *   any ERROR(-N) line not
+					      *   otherwise classified by a
+					      *   more specific entry. Was
+					      *   referenced by
+					      *   ANY_ERROR_ENTRY before this
+					      *   enum defined it; added here
+					      *   to fix that (pre-existing
+					      *   undeclared-identifier bug,
+					      *   not a new design choice). */
 	LORA_E5_MM_TAG_JOIN_DONE,
 	LORA_E5_MM_TAG_JOIN_FAILED,
 	LORA_E5_MM_TAG_JOIN_BUSY,
@@ -252,6 +265,20 @@ int lora_e5_mm_get_max_payload(size_t *out, k_timeout_t timeout);
 int lora_e5_mm_at_raw(const char *cmd, size_t cmd_len,
 		       char *resp_buf, size_t resp_buf_len,
 		       k_timeout_t timeout);
+
+/* ------------------------------------------------------------------- */
+/* Test-only accessors                                                  */
+/* ------------------------------------------------------------------- */
+
+/**
+ * @brief Test-only: reset all transient runtime state (port cache, JOIN
+ * URC cache, pending-send state, CONFIG sequence progress, registered
+ * event callback) back to post-init defaults. Mirrors the role
+ * lora_e5_cmd_queue_test_reset() plays for tests/cmd_queue -- call from
+ * a test's `before` hook on an already-initialized instance, not
+ * lora_e5_mm_init() again (which also re-touches the reset-GPIO pin).
+ */
+void lora_e5_mm_test_reset(void);
 
 #ifdef __cplusplus
 }

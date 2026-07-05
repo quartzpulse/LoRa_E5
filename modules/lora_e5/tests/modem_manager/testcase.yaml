@@ -1,0 +1,6 @@
+tests:
+  lora_e5.modem_manager:
+    platform_allow: native_sim
+    tags: lora_e5 modem_manager
+    integration_platforms:
+      - native_sim

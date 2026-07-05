@@ -75,18 +75,17 @@ int lora_e5_hf_build_mode(struct lora_e5_at_cmd_desc *desc,
  * @brief AT+ID=DevEui,<hex> / AT+ID=AppEui,<hex> (OTAA) or
  * AT+ID=DevAddr,<hex> (ABP).
  *
- * SET SYNTAX NOT DIRECTLY CONFIRMED. [Guessing] Every captured log in
- * this review showed AT+ID used as a bare QUERY ("AT+ID" -> three
- * "+ID: ..." lines); no capture showed the SET form. Modeled here by
- * analogy to AT+KEY=APPKEY,<32-hex-chars> (which IS confirmed,
- * CampusIoT captured log) -- plain contiguous hex, no colons, despite
- * the QUERY response using colon-separated hex ("+ID: DevAddr,
- * 32:30:84:63"). This analogy could be wrong. DO NOT rely on this
- * builder in production without a hardware capture confirming the
- * set syntax first -- an incorrect format here would fail CONFIG
- * silently-ish (ERROR(-1) invalid params, which the recovery ladder
- * would then endlessly retry-and-fail against, since it's actually a
- * structural bug, not a transient fault).
+ * SET SYNTAX CONFIRMED [Certain, real hardware capture 2026-07-05,
+ * LoRa-E5-HF firmware V4.0.11]: `AT+ID=DevEui,26C518F8EF840E5D`
+ * (plain contiguous hex, no colons -- the AT+KEY analogy held) was
+ * accepted and echoed back as `+ID: DevEui, 26:C5:18:F8:EF:84:0E:5D`
+ * -- i.e. the SET echo uses the same colon-separated display format
+ * as the QUERY response, even though the SET argument itself is
+ * plain hex. Round-tripped against the device's own existing DevEui
+ * value, so no identity change occurred. Only DevEui's field name was
+ * exercised directly; AppEui/DevAddr are assumed to share the same
+ * `AT+ID=<field>,<hex>` syntax by construction (same command, same
+ * field-name/value shape) but were not independently sent.
  *
  * @param field  0 = DevEui, 1 = AppEui, 2 = DevAddr (kept as an int
  *               rather than a new enum until the set syntax itself is
@@ -137,14 +136,15 @@ int lora_e5_hf_build_key_appskey(struct lora_e5_at_cmd_desc *desc,
 
 /**
  * @brief AT+DR=<region>, e.g. "AT+DR=EU868". Confirmed set syntax and
- * confirmed region strings EU868/US915/AU915/AS923/KR920/IN865
- * [Certain, Seeed product spec sheet + Hackster tutorial captures].
- * CN779/EU433/US915HYBRID/AU915OLD/CN470/RU864 are included in
- * enum lora_e5_region (lora_e5_types.h) but their exact string
- * spelling could not be re-verified in this pass [Likely, from an
- * earlier full-spec fetch not independently re-confirmed here --
- * do not ship support for these six without re-checking the spelling
- * against the primary PDF directly before release].
+ * ALL TWELVE region strings [Certain]: EU868/US915/AU915/AS923/
+ * KR920/IN865 from Seeed product spec sheet + Hackster tutorial
+ * captures; CN779/EU433/US915HYBRID/AU915OLD/CN470/RU864 spelling
+ * (one word, no underscores -- "US915HYBRID" and "AU915OLD" are
+ * confirmed NOT "US915_HYBRID"/"AU915_OLD", both of which the device
+ * rejects with ERROR(-1)) directly confirmed via real hardware
+ * capture 2026-07-05, LoRa-E5-HF firmware V4.0.11, device set to each
+ * of the six in turn and read back via `AT+DR=<region>` ->
+ * `+DR: <region>` echo, then reverted to the device's original IN865.
  */
 int lora_e5_hf_build_dr_region(struct lora_e5_at_cmd_desc *desc,
 				enum lora_e5_region region,
@@ -251,21 +251,24 @@ int lora_e5_hf_build_fdefault(struct lora_e5_at_cmd_desc *desc);
 int lora_e5_hf_build_ver_query(struct lora_e5_at_cmd_desc *desc);
 
 /**
- * @brief AT+LW=LEN or equivalent max-payload query.
+ * @brief AT+LW=LEN max-payload query.
  *
- * EXACT SUBCOMMAND SYNTAX NOT RE-CONFIRMED IN THIS REVIEW PASS.
- * [Guessing] AT+LW is documented as a multi-purpose "misc
- * configuration" command with subcommands including CDR, ULDL, NET,
- * DC, MC, THLD per the command index table -- "LEN" was referenced in
- * an earlier design pass but its presence in that subcommand list
- * could not be re-verified against the primary spec text in this
- * pass. DO NOT implement lora_e5_mm_get_max_payload() against this
- * builder without first confirming the exact subcommand against the
- * primary PDF (§4.x, AT+LW section) directly -- returning a wrong-
- * but-plausible-looking max payload value would be worse than
- * returning an explicit "not implemented" error, since callers use
- * this to avoid LORA_E5_TX_FAIL_LENGTH_ERROR and a wrong answer
- * fails silently at the RF layer instead.
+ * SUBCOMMAND SYNTAX CONFIRMED [Certain, real hardware capture
+ * 2026-07-05, LoRa-E5-HF firmware V4.0.11]: `AT+LW=LEN` (bare `AT+LW`
+ * with no subcommand returns `ERROR(-1)`) returned `+LW: LEN, 51` on
+ * a device configured for IN865/DR0. Other AT+LW subcommands
+ * (CDR/ULDL/NET/DC/MC/THLD) were also exercised and confirmed valid
+ * in the same session.
+ *
+ * This builder now returns a real descriptor. It does NOT resolve
+ * VERIFICATION_NEEDED.md item 2's implementation blocker, though: the
+ * numeric value ("51") is carried in the matched line's remainder
+ * text, and struct lora_e5_at_result has no field to expose that back
+ * to the caller -- the same architecture gap documented on
+ * lora_e5_mm_get_version() in lora_e5_modem_manager.c. Do not call
+ * this builder from lora_e5_mm_get_max_payload() and trust its return
+ * code as if it carries the parsed value; that function still
+ * explicitly returns -ENOTSUP for that reason.
  */
 int lora_e5_hf_build_max_payload_query(struct lora_e5_at_cmd_desc *desc);
 

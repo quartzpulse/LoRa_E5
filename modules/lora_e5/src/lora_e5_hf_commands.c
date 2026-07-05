@@ -127,7 +127,7 @@ int lora_e5_hf_build_mode(struct lora_e5_at_cmd_desc *desc,
 }
 
 /* ------------------------------------------------------------------- */
-/* ID (set) -- UNVERIFIED SYNTAX, see header doc comment                 */
+/* ID (set) -- confirmed real hardware, see header doc comment           */
 /* ------------------------------------------------------------------- */
 
 static const struct lora_e5_at_terminal_event te_id[] = {
@@ -273,9 +273,10 @@ static const struct lora_e5_at_terminal_event te_dr[] = {
 	ANY_ERROR_ENTRY,
 };
 
-/* Confidence per-entry: EU868/US915/AU915/AS923/KR920/IN865 are
- * [Certain]. The remaining six are [Likely] -- re-verify spelling
- * against the primary spec PDF before shipping support for them.
+/* Confidence per-entry: all twelve [Certain]. EU868/US915/AU915/
+ * AS923/KR920/IN865 from secondary-source captures; the remaining six
+ * (US915HYBRID/CN779/EU433/AU915OLD/CN470/RU864) confirmed via real
+ * hardware capture 2026-07-05, FW V4.0.11 -- see header doc comment.
  */
 static const char *region_strings[] = {
 	[LORA_E5_REGION_EU868]       = "EU868",
@@ -763,12 +764,25 @@ int lora_e5_hf_build_ver_query(struct lora_e5_at_cmd_desc *desc)
 	return 0;
 }
 
+static const struct lora_e5_at_terminal_event te_lw_len[] = {
+	{ .prefix = "LW", .remainder = NULL,
+	  .match_mode = LORA_E5_AT_MATCH_ANY_URC,
+	  .result_tag = LORA_E5_MM_TAG_OK },
+	ANY_ERROR_ENTRY,
+};
+
 int lora_e5_hf_build_max_payload_query(struct lora_e5_at_cmd_desc *desc)
 {
-	ARG_UNUSED(desc);
-	/* Deliberately not implemented -- see header doc comment.
-	 * Returning a descriptor here would invite a caller to trust an
-	 * unverified command, which is worse than an explicit refusal.
-	 */
-	return -ENOTSUP;
+	static const char cmd[] = "AT+LW=LEN";
+
+	if (desc == NULL) {
+		return -EINVAL;
+	}
+	*desc = (struct lora_e5_at_cmd_desc){
+		.cmd = cmd,
+		.cmd_len = sizeof(cmd) - 1,
+		.terminal_events = te_lw_len,
+		.terminal_event_count = ARRAY_SIZE(te_lw_len),
+	};
+	return 0;
 }
