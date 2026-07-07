@@ -55,12 +55,47 @@ struct mock_transport_state {
 
 static struct mock_transport_state mock;
 
+static void feed_line(const char *text); /* defined below, in Helpers */
+
+/* Scripted auto-response for the synchronous-query tests
+ * (get_version/get_ids): lora_e5_at_submit_sync() blocks the calling
+ * (ztest) thread on a semaphore that only test_wq's line processing
+ * can give, so a script armed here is "replayed" as the modem's
+ * response once mock_send() is invoked. Fed via a work item on test_wq
+ * rather than called directly from mock_send() -- lora_e5_at_process_line()
+ * must run on the same work queue passed to lora_e5_at_init() (its own
+ * doc comment), and calling it synchronously from here would also
+ * deadlock: mock_send() runs while lora_e5_cmd_queue_submit() still
+ * holds its internal lock.
+ */
+#define MOCK_SCRIPT_MAX 4
+static const char *mock_script_lines[MOCK_SCRIPT_MAX];
+static size_t mock_script_count;
+static struct k_work mock_script_work;
+
+static void mock_script_work_handler(struct k_work *work)
+{
+	ARG_UNUSED(work);
+
+	size_t n = mock_script_count;
+
+	mock_script_count = 0;
+	for (size_t i = 0; i < n; i++) {
+		feed_line(mock_script_lines[i]);
+	}
+}
+
 static int mock_send(const char *cmd, size_t len)
 {
 	mock.send_count++;
 	mock.last_cmd_len = len < sizeof(mock.last_cmd) - 1 ? len : sizeof(mock.last_cmd) - 1;
 	memcpy(mock.last_cmd, cmd, mock.last_cmd_len);
 	mock.last_cmd[mock.last_cmd_len] = '\0';
+
+	if (mock_script_count > 0) {
+		k_work_submit_to_queue(&test_wq, &mock_script_work);
+	}
+
 	return mock.forced_rc;
 }
 
@@ -202,6 +237,8 @@ static void *suite_setup(void)
 			    K_THREAD_STACK_SIZEOF(test_wq_stack),
 			    TEST_WQ_PRIORITY, NULL);
 
+	k_work_init(&mock_script_work, mock_script_work_handler);
+
 	zassert_equal(lora_e5_at_init(&test_wq), 0, NULL);
 
 	ARG_UNUSED(init_params);
@@ -221,6 +258,8 @@ static void case_before(void *f)
 	memset(&mock, 0, sizeof(mock));
 	memset(event_log, 0, sizeof(event_log));
 	event_log_count = 0;
+	memset(mock_script_lines, 0, sizeof(mock_script_lines));
+	mock_script_count = 0;
 
 	lora_e5_at_set_transport(mock_send);
 
@@ -332,7 +371,9 @@ ZTEST(lora_e5_modem_manager, test_configure_otaa_happy_path)
 		      "expected one CONFIG_STEP_RESULT per sub-command");
 	for (int i = 0; i < CFG_STEP_COUNT_FOR_TEST; i++) {
 		zassert_equal(event_log[i].type, LORA_E5_FSM_EVT_CONFIG_STEP_RESULT, NULL);
-		zassert_equal(event_log[i].config_step_error, 0, "step %d", i);
+		zassert_equal(event_log[i].config_step_result.error, 0, "step %d", i);
+		zassert_equal(event_log[i].config_step_result.is_last_step,
+			      i == CFG_STEP_COUNT_FOR_TEST - 1, "step %d", i);
 	}
 
 	/* CONFIG's own AT+PORT= step must seed the send-time port cache --
@@ -383,7 +424,9 @@ ZTEST(lora_e5_modem_manager, test_configure_abp_command_shape)
 
 	zassert_equal(event_log_count, CFG_STEP_COUNT_FOR_TEST, NULL);
 	for (int i = 0; i < CFG_STEP_COUNT_FOR_TEST; i++) {
-		zassert_equal(event_log[i].config_step_error, 0, "step %d", i);
+		zassert_equal(event_log[i].config_step_result.error, 0, "step %d", i);
+		zassert_equal(event_log[i].config_step_result.is_last_step,
+			      i == CFG_STEP_COUNT_FOR_TEST - 1, "step %d", i);
 	}
 }
 
@@ -399,8 +442,10 @@ ZTEST(lora_e5_modem_manager, test_configure_halts_on_step_failure)
 	zassert_equal(mock.send_count, 2,
 		      "must NOT proceed past the failed step");
 	zassert_equal(event_log_count, 2, NULL);
-	zassert_equal(event_log[0].config_step_error, 0, NULL);
-	zassert_equal(event_log[1].config_step_error, LORA_E5_AT_ERR_INVALID_PARAM, NULL);
+	zassert_equal(event_log[0].config_step_result.error, 0, NULL);
+	zassert_equal(event_log[1].config_step_result.error, LORA_E5_AT_ERR_INVALID_PARAM, NULL);
+	zassert_false(event_log[1].config_step_result.is_last_step,
+		      "a failed step must not be reported as the last step");
 }
 
 ZTEST(lora_e5_modem_manager, test_configure_rejects_non_class_a)

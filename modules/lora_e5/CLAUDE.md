@@ -87,56 +87,50 @@ the test.
 ## Known gaps / TODOs, in priority order
 
 Check `docs/VERIFICATION_NEEDED.md` for the full list with sources.
-Summary of what blocks real use:
+Port caching (`lora_e5_mm_send()` reissuing `AT+PORT=` when the port
+changes) and `AT+ID` SET syntax are both resolved and confirmed against
+real hardware -- see VERIFICATION_NEEDED.md's "Resolved" sections, not
+listed here as open gaps anymore. Summary of what still blocks real use:
 
-1. **Port caching not implemented.** `lora_e5_hf_build_send()`'s
-   `port` parameter is currently a no-op in the wire format (MSGHEX/
-   CMSGHEX carry no port argument; it's set once via `AT+PORT=`).
-   Whoever writes `lora_e5_modem_manager.c`'s `lora_e5_mm_send()` MUST
-   cache the last-configured port and reissue `AT+PORT=` first if the
-   caller's requested port differs — otherwise sends silently go out
-   on the wrong port with no error.
-2. **`AT+ID` SET syntax unverified** (`lora_e5_hf_build_id_set_eui()`
-   in `lora_e5_hf_commands.c`) — modeled by analogy to `AT+KEY`, not
-   directly confirmed. Do not treat as working until checked against
-   real hardware.
-3. **`AT+LW=LEN` max-payload query is stubbed to return `-ENOTSUP`
+1. **`AT+LW=LEN` max-payload query is stubbed to return `-ENOTSUP`
    on purpose** (`lora_e5_hf_build_max_payload_query()`). Do not
    implement a guessed subcommand syntax here — confirm against the
    primary spec PDF's `AT+LW` section first.
-4. **`lora_e5_at_submit_sync()` serializes all synchronous callers
+2. **`lora_e5_at_submit_sync()` serializes all synchronous callers
    app-wide** (one static context + one mutex held for the full call
    duration — see the design-note comment at the top of that function
    in `lora_e5_at.c`). This is deliberate, not a bug, but if you're
    asked to improve concurrency here, the fix is a small static
    context pool sized to `CONFIG_LORA_E5_CMD_QUEUE_DEPTH`, not a
    dynamic allocation.
-5. **`g_sync_lock` lazy-init has a narrow first-call race** (noted
+3. **`g_sync_lock` lazy-init has a narrow first-call race** (noted
    TODO in `lora_e5_at.c`). Preferred fix: `K_MUTEX_DEFINE` static
    initializer instead of lazy `k_mutex_init()`. Low priority but
    flagged so it doesn't get "cleaned up" the wrong way.
 
-## Not yet implemented at all
+## Implementation status
 
-- `src/lora_e5_modem_manager.c` — the runtime. Header contract is in
-  `src/lora_e5_modem_manager.h` and `include/lora_e5/lora_e5_at.h`.
-  This is next in the implementation order.
-- `src/lora_e5_fsm.c`
-- `src/lora_e5_uart.c` (UART Async API backend — nothing has been
-  built against real UART yet; all current tests use a mock
-  `lora_e5_at_send_fn_t` function pointer in place of it)
-- `src/lora_e5_events.c`
-- `src/lora_e5.c` (public API implementation)
-- `src/lora_e5_internal.h`
-- Module-root `CMakeLists.txt`, `Kconfig`, `README.md` — until these
-  exist, `CONFIG_LORA_E5_CMD_QUEUE_DEPTH` and
-  `CONFIG_LORA_E5_LOG_LEVEL` fall back to `#define`s with a
-  `#warning` at the top of `lora_e5_cmd_queue.c`. Replace those with
-  real Kconfig symbols when you write Kconfig, don't leave both
-  defined.
-- `tests/fsm/`, `tests/mock_uart/` (a real reusable mock-UART fixture,
-  not just the inline function pointer current tests use)
-- `samples/join/`, `samples/uplink/`, `samples/shell/`
+As of the Phase 3 bring-up pass (`docs/Phase3-ESP32S3-Bringup-Plan.md`),
+everything through hardware bring-up is implemented and building green:
+`src/lora_e5_modem_manager.c`, `src/lora_e5_fsm.c`, `src/lora_e5_events.c`,
+`src/lora_e5.c`, `src/lora_e5_internal.h`, `src/lora_e5_uart.c` (real
+UART Async API backend), module-root `Kconfig`/`CMakeLists.txt`/
+`zephyr/module.yml`, `tests/fsm/` + `tests/mock_uart/` (all four test
+suites pass: `west twister -p native_sim -T modules/lora_e5/tests -v`),
+the `esp32s3_devkitc` UART1 board overlay
+(`samples/join/boards/esp32s3_devkitc_procpu.overlay`), and
+`samples/join/` (builds and links a real flashable image for
+`esp32s3_devkitc/esp32s3/procpu` -- confirmed by an actual build, not
+just review).
+
+Not yet implemented: `samples/uplink/`, `samples/shell/` (no stated
+requirement drove these yet); real hardware bring-up itself (flashing,
+join/send verification against ChirpStack) still needs to happen on
+the physical board -- see `docs/Phase3-ESP32S3-Bringup-Plan.md`'s
+Verification section for the exact steps and what's needed from you
+(AppKey, ESP32-S3 serial device node).
+
+`README.md` at the module root also doesn't exist yet.
 
 ## Build gotchas (found by an actual build, not review)
 

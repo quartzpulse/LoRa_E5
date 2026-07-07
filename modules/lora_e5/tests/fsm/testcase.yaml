@@ -1,0 +1,6 @@
+tests:
+  lora_e5.fsm:
+    platform_allow: native_sim
+    tags: lora_e5 fsm
+    integration_platforms:
+      - native_sim

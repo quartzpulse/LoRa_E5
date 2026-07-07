@@ -89,6 +89,101 @@ change to the AT Command Manager layer, flagging for your call since
 `lora_e5_at.c`/`lora_e5_cmd_queue.c` are meant to stay LoRaWAN-agnostic
 generic infrastructure (Non-negotiable decision #6 in CLAUDE.md).
 
+### 11. `lora_e5_leave()`: CLAUDE.md decision #2 vs. `lora_e5.h`'s own doc comment
+CLAUDE.md's decision #2 says "TX, sleep, reset, and **leave** are all
+transitions out of and back into `JOINED`, never through `READY`."
+`lora_e5.h`'s `lora_e5_leave()` doc comment says the opposite for this
+specific call: "Clears local join state, returns FSM to READY." These
+directly conflict on the one case they both name. Implemented per the
+more specific, concrete contract (`lora_e5.h` -- `lora_e5_fsm_leave()`
+in `lora_e5_fsm.c` transitions `JOINING`/`JOINED -> READY`), per
+CLAUDE.md's own instruction to trust the code over the prose summary
+when they disagree. Flagging rather than silently picking a side --
+if CLAUDE.md's decision #2 was meant literally for `leave()` too, this
+needs a real decision, not a guess.
+
+### 12. Recovery ladder uses a fixed inter-pass retry delay, not full backoff
+`lora_e5_fsm.c`'s `RECOVERY_PASS_RETRY_DELAY_MS` (2000ms, local
+`#define`, not a Kconfig symbol) is a flat delay between failed
+recovery-ladder passes. Phase 1 §8.3 discusses a fuller
+exponential-backoff scheme specifically motivated by the modem's own
+join duty-cycle accounting (1% first hour / 0.1% next 10h / 0.01%
+after). This v1 pass implements the ladder's *stop condition*
+(`CONFIG_LORA_E5_MAX_RETRIES` full passes -> `ERROR`) faithfully, but
+not the duty-cycle-aware backoff curve. Flagged as a simplification
+worth review before a real regulatory-duty-cycle-sensitive deployment,
+not silently omitted.
+
+### 13. `lora_e5_config`'s port/ADR/repeat/retry fields have no public setter
+`lora_e5.h` exposes `lora_e5_set_otaa()`/`_abp()`/`_region()`/`_class()`
+but nothing for `struct lora_e5_config`'s `port`, `adr_enable`,
+`unconfirmed_repeats`, or `confirmed_retries` fields -- all four are
+read by the CONFIG sequence (`AT+PORT`/`AT+ADR`/`AT+REPT`/`AT+RETRY`).
+`lora_e5.c` fixes v1 defaults (`port=1`, `adr_enable=true`,
+`unconfirmed_repeats=1`, `confirmed_retries=1`) rather than inventing a
+new public setter function (a third, unauthorized header contract
+addition beyond the two flagged in
+`docs/Phase3-ESP32S3-Bringup-Plan.md`). If per-application control over
+these is actually needed, that's a real `lora_e5.h` API gap to decide
+on deliberately, not something to silently work around further.
+
+### 14. Fixed: `te_reset`/`te_fdefault` used a terminal-match mode that could never fire
+Pre-existing bug (already present in the initial commit, unrelated to
+the FSM/events/public-API work in `docs/Phase3-ESP32S3-Bringup-Plan.md`)
+found while getting `tests/modem_manager` building and passing again:
+`te_reset`/`te_fdefault` in `lora_e5_hf_commands.c` used
+`LORA_E5_AT_MATCH_EXACT` against `remainder = "OK"`, but
+`lora_e5_at_parse_line()`'s `"+PREFIX: OK"` handling classifies the
+line as `kind == LORA_E5_AT_LINE_OK` and returns *without ever setting
+`line->remainder`* -- so `line->remainder == NULL` and the EXACT match
+(which requires both sides non-NULL) could never succeed. In practice
+this meant `lora_e5_mm_reset()`/`lora_e5_mm_factory_reset()` would hang
+until timeout on real hardware instead of resolving on `"+RESET: OK"`/
+`"+FDEFAULT: OK"` -- never previously caught because the test suite
+itself had a separate, independent build break (`mock_script_lines`/
+`mock_script_count` referenced but never declared -- also fixed this
+pass) that prevented it from ever compiling and running. Fixed by
+switching both to `LORA_E5_AT_MATCH_ANY_URC` (prefix-only), matching
+the convention every other simple confirm-only command in this file
+already uses (`te_mode`, `te_port`, etc.).
+
+### 15. `tests/cmd_queue`/`tests/modem_manager` don't wire the real module Kconfig
+`docs/Phase3-ESP32S3-Bringup-Plan.md`'s Phase 4 originally proposed
+`list(APPEND ZEPHYR_EXTRA_MODULES ...)` + `CONFIG_LORA_E5=y` in these
+two suites' `prj.conf` now that the in-source `#ifndef` fallbacks are
+gone. Empirically this doesn't work: real values for symbols nested
+under `if LORA_E5 ... endif` in Kconfig require `CONFIG_LORA_E5=y`
+(confirmed by inspecting a generated `autoconf.h` -- with `LORA_E5`
+unset, none of the nested symbols are emitted at all, not even at
+their `default`), but setting `CONFIG_LORA_E5=y` unconditionally
+triggers `modules/lora_e5/CMakeLists.txt`'s own `zephyr_library()` to
+build every `src/*.c` file -- which duplicates whatever subset these
+two tests already list directly in their own `target_sources(app ...)`
+and would fail to link (multiple definition of the same global
+symbols/`LOG_MODULE_REGISTER` storage). Fixed instead with
+`target_compile_definitions(app PRIVATE CONFIG_LORA_E5_...=<value>)`
+in each test's `CMakeLists.txt`, bypassing Kconfig for just the
+handful of symbols these two narrow-scope suites' file subset still
+references, while `tests/fsm` and `samples/join` (Phase 5/8, which
+genuinely need the whole library) use the real
+`ZEPHYR_EXTRA_MODULES`+`CONFIG_LORA_E5=y` path.
+
+### 16. No path for an RX-side UART fault (overlong/malformed line) to reach the FSM
+`lora_e5_uart.c` drops an overlong or malformed line and resets its
+assembly buffer (logged via a counter only), but there is no path in
+the current `lora_e5_at.h` contract for the UART backend (which has no
+FSM/Modem-Manager reference by design, Phase 1 §2.1) to signal this
+fault upward the way a TX-side `uart_tx()` failure naturally does via
+`lora_e5_at_send_fn_t`'s return value (which `lora_e5_cmd_queue.c`
+already turns into `LORA_E5_AT_OUTCOME_UART_ERROR` -> `UART_FAULT` ->
+recovery, no gap there). Fixing this would mean adding a new
+transport-to-command-manager reporting hook to `lora_e5_at.h` (e.g. an
+`lora_e5_at_report_transport_fault()` entry point) -- a layering-
+sensitive header change, flagged for review rather than added
+unilaterally in this pass. In practice this only matters if the
+physical link itself is actively corrupting bytes; a healthy UART link
+should never hit this path.
+
 ---
 
 ## Resolved this pass

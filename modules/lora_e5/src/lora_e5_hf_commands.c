@@ -692,8 +692,18 @@ int lora_e5_hf_build_lowpower(struct lora_e5_at_cmd_desc *desc,
 /* ------------------------------------------------------------------- */
 
 static const struct lora_e5_at_terminal_event te_reset[] = {
-	{ .prefix = "RESET", .remainder = "OK",
-	  .match_mode = LORA_E5_AT_MATCH_EXACT,
+	/* ANY_URC (prefix-only), not EXACT -- "+RESET: OK" classifies as
+	 * kind==LORA_E5_AT_LINE_OK with NO remainder text at all (see
+	 * lora_e5_parser.c's "+PREFIX: OK" handling: it returns immediately
+	 * without ever setting line->remainder), so an EXACT match against
+	 * remainder="OK" can never fire -- line->remainder is NULL. Matches
+	 * the same prefix-only convention already used by te_mode/te_port/
+	 * every other simple confirm-only command in this file. Pre-existing
+	 * bug found and fixed while getting tests/modem_manager building
+	 * green again (see docs/VERIFICATION_NEEDED.md).
+	 */
+	{ .prefix = "RESET", .remainder = NULL,
+	  .match_mode = LORA_E5_AT_MATCH_ANY_URC,
 	  .result_tag = LORA_E5_MM_TAG_RESET_OK },
 	ANY_ERROR_ENTRY,
 };
@@ -715,8 +725,9 @@ int lora_e5_hf_build_reset(struct lora_e5_at_cmd_desc *desc)
 }
 
 static const struct lora_e5_at_terminal_event te_fdefault[] = {
-	{ .prefix = "FDEFAULT", .remainder = "OK",
-	  .match_mode = LORA_E5_AT_MATCH_EXACT,
+	/* ANY_URC, not EXACT -- same pre-existing bug/fix as te_reset above. */
+	{ .prefix = "FDEFAULT", .remainder = NULL,
+	  .match_mode = LORA_E5_AT_MATCH_ANY_URC,
 	  .result_tag = LORA_E5_MM_TAG_FDEFAULT_OK },
 	ANY_ERROR_ENTRY,
 };

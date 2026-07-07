@@ -18,24 +18,6 @@
 #include <errno.h>
 #include <zephyr/logging/log.h>
 
-#ifndef CONFIG_LORA_E5_CMD_QUEUE_DEPTH
-/* Placeholder until Kconfig exists (tracked deliverable) -- matches
- * the value assumed elsewhere in review discussion. Replace this
- * fallback with the real Kconfig symbol once Kconfig is written; do
- * not ship with this #ifndef fallback silently active.
- *
- * NOTE: deliberately NOT using #warning here -- Zephyr's default
- * build flags include -Werror, which promotes #warning to a hard
- * build failure (confirmed by an actual build attempt). A comment is
- * the only way to leave this reminder without breaking the build.
- */
-#define CONFIG_LORA_E5_CMD_QUEUE_DEPTH 8
-#endif
-
-#ifndef CONFIG_LORA_E5_LOG_LEVEL
-#define CONFIG_LORA_E5_LOG_LEVEL LOG_LEVEL_INF
-#endif
-
 LOG_MODULE_REGISTER(lora_e5_cmdq, CONFIG_LORA_E5_LOG_LEVEL);
 
 /* Worst case: every currently-queued command plus the one active

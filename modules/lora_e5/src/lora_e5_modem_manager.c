@@ -20,34 +20,7 @@
 #include <stdlib.h>
 #include <errno.h>
 
-#ifndef CONFIG_LORA_E5_LOG_LEVEL
-/* Same placeholder as lora_e5_cmd_queue.c/lora_e5_at.c -- remove once
- * Kconfig exists. Each translation unit needs its own fallback.
- */
-#define CONFIG_LORA_E5_LOG_LEVEL LOG_LEVEL_INF
-#endif
-
 LOG_MODULE_REGISTER(lora_e5_mm, CONFIG_LORA_E5_LOG_LEVEL);
-
-/* Placeholder Kconfig fallbacks (Kconfig itself not written yet -- see
- * CLAUDE.md "Not yet implemented"). Deliberately plain comments, not
- * #warning -- Zephyr's -Werror promotes #warning to a build failure
- * (see CLAUDE.md "Build gotchas", already hit in lora_e5_cmd_queue.c).
- * Values below are placeholders, not derived from any timing
- * measurement against real hardware.
- */
-#ifndef CONFIG_LORA_E5_CMD_TIMEOUT_MS
-#define CONFIG_LORA_E5_CMD_TIMEOUT_MS 2000
-#endif
-#ifndef CONFIG_LORA_E5_TX_TIMEOUT_MS
-#define CONFIG_LORA_E5_TX_TIMEOUT_MS 10000
-#endif
-#ifndef CONFIG_LORA_E5_JOIN_TIMEOUT_MS
-#define CONFIG_LORA_E5_JOIN_TIMEOUT_MS 15000
-#endif
-#ifndef CONFIG_LORA_E5_MAX_RETRIES
-#define CONFIG_LORA_E5_MAX_RETRIES 3
-#endif
 
 /* Not part of the documented Kconfig symbol list in lora_e5_config.h --
  * deliberately a plain local #define rather than a CONFIG_-prefixed
@@ -690,8 +663,12 @@ static void mm_config_step_cb(const struct lora_e5_at_result *result)
 
 	struct lora_e5_fsm_event evt = {
 		.type = LORA_E5_FSM_EVT_CONFIG_STEP_RESULT,
-		.config_step_error = (result->result_tag == LORA_E5_MM_TAG_OK)
-			? 0 : result->error_code,
+		.config_step_result = {
+			.error = (result->result_tag == LORA_E5_MM_TAG_OK)
+				? 0 : result->error_code,
+			.is_last_step = (result->result_tag == LORA_E5_MM_TAG_OK) &&
+				(g_config.step + 1 >= CFG_STEP_COUNT),
+		},
 	};
 
 	emit_event(&evt);
@@ -1419,6 +1396,16 @@ int lora_e5_mm_probe(void)
 
 void lora_e5_mm_test_reset(void)
 {
+	/* Cancel before any subsequent lora_e5_mm_init() re-runs
+	 * k_work_init_delayable() on these -- re-initializing a still-
+	 * scheduled delayable work item corrupts the kernel's internal
+	 * timeout list rather than cleanly replacing it (hit in practice by
+	 * tests/fsm, whose test cases can end before a short settle/pulse
+	 * timer from an earlier case has fired).
+	 */
+	k_work_cancel_delayable(&g_reset_gpio_work);
+	k_work_cancel_delayable(&g_wakeup_settle_work);
+
 	memset(&g_pending_send, 0, sizeof(g_pending_send));
 	memset(&g_config, 0, sizeof(g_config));
 
@@ -1456,6 +1443,18 @@ int lora_e5_mm_init(const struct lora_e5_mm_init_params *params)
 			return rc;
 		}
 	}
+
+	/* Cancel before re-initializing -- a repeated lora_e5_mm_init() call
+	 * (as tests do, between cases) must not run k_work_init_delayable()
+	 * on a work item a previous call left scheduled; that corrupts the
+	 * kernel's internal timeout list rather than cleanly replacing it.
+	 * lora_e5_mm_test_reset() also cancels both, but only after this
+	 * point if called separately -- cancel directly here too, since
+	 * this function's own k_work_init_delayable() calls are what must
+	 * be protected.
+	 */
+	k_work_cancel_delayable(&g_reset_gpio_work);
+	k_work_cancel_delayable(&g_wakeup_settle_work);
 
 	k_work_init_delayable(&g_reset_gpio_work, reset_gpio_deassert);
 	k_work_init_delayable(&g_wakeup_settle_work, wakeup_settle_expired);

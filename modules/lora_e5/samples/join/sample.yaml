@@ -1,0 +1,13 @@
+sample:
+  name: LoRa-E5 join sample
+  description: >
+    Boot, join, and send a test uplink through the full lora_e5 library
+    stack (public API -> FSM -> Modem Manager -> AT Command Manager ->
+    real UART) against a real LoRa-E5-HF module.
+tests:
+  sample.lora_e5.join:
+    # Requires real LoRa-E5-HF hardware wired to UART1 and OTAA
+    # credentials filled in (src/main.c) -- build-only in CI/twister.
+    build_only: true
+    platform_allow: esp32s3_devkitc/esp32s3/procpu
+    tags: lora_e5

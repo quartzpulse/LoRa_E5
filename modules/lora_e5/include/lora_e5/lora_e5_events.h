@@ -97,6 +97,22 @@ struct lora_e5_fsm_tx_result {
 };
 
 /**
+ * @brief Payload for LORA_E5_FSM_EVT_CONFIG_STEP_RESULT.
+ *
+ * Modem Manager emits one of these per CONFIG sub-command (9 total,
+ * see CFG_STEP_COUNT in lora_e5_modem_manager.c) -- error is
+ * meaningful only on failure. is_last_step lets the FSM tell "one
+ * step just succeeded, more coming" from "all steps succeeded, move
+ * to READY" without the FSM hardcoding the step count itself, which
+ * would duplicate knowledge Modem Manager already owns and silently
+ * desync if that step list ever changes.
+ */
+struct lora_e5_fsm_config_step_result {
+	enum lora_e5_at_error error;
+	bool is_last_step;
+};
+
+/**
  * @brief Tagged-union event as submitted to the FSM work queue.
  *
  * Fixed-size, no dynamic allocation -- sized for the largest payload
@@ -110,9 +126,8 @@ struct lora_e5_fsm_event {
 		struct lora_e5_fsm_join_result join_result;
 		struct lora_e5_fsm_tx_result tx_result;
 		struct lora_e5_downlink downlink;
-		enum lora_e5_at_error config_step_error; /**< Valid on
-		                                    *   CONFIG_STEP_RESULT
-		                                    *   failure. */
+		struct lora_e5_fsm_config_step_result config_step_result; /**< Valid
+		                                    *   on CONFIG_STEP_RESULT. */
 		int reset_result;   /**< 0 on success, negative errno
 		                      *   otherwise. */
 	};

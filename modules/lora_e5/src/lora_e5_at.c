@@ -10,15 +10,6 @@
 #include <errno.h>
 #include <zephyr/logging/log.h>
 
-#ifndef CONFIG_LORA_E5_LOG_LEVEL
-/* Same placeholder as lora_e5_cmd_queue.c -- remove once Kconfig
- * exists and defines this for real. Both files need their own
- * fallback since each is compiled as an independent translation
- * unit; a #define in one .c file is not visible in another.
- */
-#define CONFIG_LORA_E5_LOG_LEVEL LOG_LEVEL_INF
-#endif
-
 LOG_MODULE_DECLARE(lora_e5_cmdq, CONFIG_LORA_E5_LOG_LEVEL);
 
 int lora_e5_at_init(struct k_work_q *rx_work_q)

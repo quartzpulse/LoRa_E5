@@ -1,0 +1,4 @@
+name: lora_e5
+build:
+  cmake: .
+  kconfig: Kconfig

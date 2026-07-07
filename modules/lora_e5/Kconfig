@@ -1,0 +1,199 @@
+# LoRa-E5 Zephyr library configuration
+#
+# SPDX-License-Identifier: Apache-2.0
+
+menuconfig LORA_E5
+	bool "LoRa-E5-HF LoRaWAN modem library"
+	depends on UART_ASYNC_API
+	select GPIO
+	help
+	  Event-driven Zephyr library managing the full LoRa-E5-HF modem
+	  lifecycle (boot/config/join/send/sleep/recovery) through the
+	  module's AT command firmware. See modules/lora_e5/docs/ for the
+	  full architecture.
+
+	  Requires CONFIG_UART_ASYNC_API=y (and whatever the target board's
+	  serial driver needs to support it, e.g. CONFIG_SERIAL_SUPPORT_ASYNC)
+	  to be enabled explicitly by the application -- deliberately a
+	  `depends on`, not a `select`: unlike select, this doesn't risk
+	  forcing an unsatisfiable Kconfig combination on a board whose
+	  serial driver can't actually support the async API.
+
+if LORA_E5
+
+module = LORA_E5
+module-str = lora_e5
+source "subsys/logging/Kconfig.template.log_config"
+
+config LORA_E5_HAS_RESET_GPIO
+	bool "Hardware reset GPIO available"
+	help
+	  Enable if the target board wires a `reset-gpios` devicetree
+	  property to the LoRa-E5's NRST pin. When disabled (the
+	  default), the Modem Manager falls back to AT+RESET-only
+	  recovery, which cannot recover a modem that can't parse AT
+	  commands at all. Never hardcoded -- see
+	  docs/Phase1-Architecture.md decision on reset backend
+	  abstraction.
+
+config LORA_E5_RX_STACK_SIZE
+	int "RX work queue stack size"
+	default 1536
+	help
+	  Stack for the dedicated work queue running UART line assembly,
+	  AT parsing, and AT Command Manager response routing.
+
+config LORA_E5_FSM_STACK_SIZE
+	int "FSM work queue stack size"
+	default 2048
+	help
+	  Stack for the dedicated work queue running every FSM state
+	  transition -- the single writer of FSM state.
+
+config LORA_E5_NOTIFY_STACK_SIZE
+	int "Application-callback notify work queue stack size"
+	default 1024
+	help
+	  Stack for the dedicated, lower-priority work queue that
+	  invokes the application's registered callback, decoupling
+	  application callback latency/blocking from modem processing.
+
+config LORA_E5_RX_BUFFER_SIZE
+	int "UART RX ring buffer size"
+	default 600
+	help
+	  Must exceed the largest realistic single line. Worst case is a
+	  MSGHEX/CMSGHEX downlink with a 242-byte payload hex-encoded
+	  (2 chars/byte) plus URC framing.
+
+config LORA_E5_UART_LINE_QUEUE_DEPTH
+	int "UART assembled-line queue depth"
+	default 4
+	help
+	  Bounds the small fixed-depth queue of assembled lines handed
+	  off from the UART callback (cheap, possibly ISR context) to
+	  the RX work queue (line copy + parse).
+
+config LORA_E5_CMD_QUEUE_DEPTH
+	int "AT command queue depth"
+	default 8
+	help
+	  Bounded array size for AT commands queued behind the one
+	  currently in flight.
+
+config LORA_E5_CMD_TIMEOUT_MS
+	int "Generic AT transaction timeout (ms)"
+	default 2000
+	help
+	  Per-command timeout for short transactions (config, query).
+	  Separate from CONFIG_LORA_E5_TX_TIMEOUT_MS -- see that
+	  symbol's help text.
+
+config LORA_E5_TX_TIMEOUT_MS
+	int "MSG/CMSG transaction timeout (ms)"
+	default 10000
+	help
+	  A confirmed uplink's internal retry ladder (module-side
+	  AT+RETRY, 3-10s randomized delay per attempt) can legitimately
+	  take much longer than a simple config query -- using one
+	  generic timeout for both risks false-timeout on TX or
+	  absurdly long waits on trivial queries.
+
+config LORA_E5_JOIN_TIMEOUT_MS
+	int "Single join attempt timeout (ms)"
+	default 15000
+	help
+	  Bounds one AT+JOIN transaction end-to-end (Start/NetID/Done
+	  URCs are intermediate lines within this one transaction, not
+	  separate transactions).
+
+config LORA_E5_BOOT_SETTLE_MS
+	int "Post-reset boot settle delay (ms)"
+	default 500
+	help
+	  No fixed "boot complete" URC is documented for this module --
+	  the FSM's BOOT state waits this long after issuing a reset
+	  before probing with plain AT.
+
+config LORA_E5_MAX_RETRIES
+	int "Generic transport / recovery-ladder retry bound"
+	default 3
+	help
+	  Bounds both AT Command Manager transport-level retries and the
+	  number of full recovery-ladder passes (reset -> reconfigure ->
+	  rejoin) attempted before giving up and entering ERROR.
+
+config LORA_E5_JOIN_MAX_RETRIES
+	int "Join-specific retry bound"
+	default 3
+	help
+	  Kept separate from CONFIG_LORA_E5_MAX_RETRIES since join
+	  failures interact with the modem's own join duty-cycle
+	  limitation (spec §3.5). Not currently consumed by a dedicated
+	  join-retry counter distinct from the recovery ladder's own
+	  CONFIG_LORA_E5_MAX_RETRIES bound -- reserved for that future
+	  refinement.
+
+config LORA_E5_AUTO_REJOIN
+	bool "Automatically rejoin after recovery"
+	default y
+	help
+	  If enabled, the recovery ladder attempts AT+JOIN again after a
+	  successful reconfigure, when the modem was JOINED (or had a TX
+	  in flight) before the fault. If disabled, the ladder stops at
+	  READY and leaves rejoining to the application -- some products
+	  intentionally don't want silent rejoin (regulatory
+	  duty-cycle-sensitive deployments).
+
+config LORA_E5_AUTO_RESET
+	bool "Watchdog-style self-reset from ERROR"
+	default n
+	help
+	  Reserved for a future last-resort self-heal on a long
+	  timescale (minutes, not seconds) for genuinely unattended
+	  deployments. NOT implemented as an actual timer in this pass --
+	  see docs/VERIFICATION_NEEDED.md. Enabling this symbol today has
+	  no effect.
+
+config LORA_E5_AUTO_RESET_TIMEOUT_MS
+	int "CONFIG_LORA_E5_AUTO_RESET timeout (ms)"
+	depends on LORA_E5_AUTO_RESET
+	default 300000
+	help
+	  How long ERROR persists before an auto-reset would fire, once
+	  CONFIG_LORA_E5_AUTO_RESET is actually implemented.
+
+config LORA_E5_EVENT_QUEUE_DEPTH
+	int "FSM / notify event queue depth"
+	default 16
+	help
+	  Bounded k_msgq depth shared by both the FSM's internal event
+	  queue and the notify subsystem's application-event queue.
+	  Sizing this too small under bursty downlink+URC conditions
+	  drops events (logged, not silent).
+
+config LORA_E5_TX_BUFFER_SIZE
+	int "Static TX staging buffer size"
+	default 242
+	help
+	  Static buffer the public API copies application TX data into
+	  before returning (caller's buffer does not need to outlive the
+	  call). Sized against the worst-case 242-byte LoRaWAN payload
+	  (Table 3-3) across every supported region/DR.
+
+config LORA_E5_DEFAULT_REGION
+	int "Default region (enum lora_e5_region ordinal)"
+	default 0
+	help
+	  Reserved -- v1 requires the application to call
+	  lora_e5_set_region() explicitly before lora_e5_start(); this
+	  symbol is not currently consumed by any code path.
+
+config LORA_E5_SHELL
+	bool "LoRa-E5 shell commands"
+	depends on SHELL
+	help
+	  Reserved for a future samples/shell/ integration -- not yet
+	  implemented.
+
+endif # LORA_E5
