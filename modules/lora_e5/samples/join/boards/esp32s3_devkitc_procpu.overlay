@@ -1,40 +1,50 @@
 /*
- * Enables &uart1 on esp32s3_devkitc/esp32s3/procpu for the LoRa-E5-HF,
- * wired to TX=GPIO17/RX=GPIO18 (esp32s3_devkitc-pinctrl.dtsi's existing
- * uart1_default entry -- already present in the board file, just not
- * enabled by default).
+ * Enables &uart2 on esp32s3_devkitc/esp32s3/procpu for the LoRa-E5-HF,
+ * wired to TX=GPIO40/RX=GPIO39 (this overlay's own uart2_default entry
+ * below -- esp32s3_devkitc-pinctrl.dtsi only ships a uart1_default,
+ * not a uart2 one, so it's defined here). Switched from &uart1
+ * (GPIO17/18) to &uart2 (GPIO39/40) during hardware bring-up.
  *
  * current-speed matches the LoRa-E5's fixed default UART framing
  * (9600 8N1), already validated live against the real module.
  *
- * dmas/dma-names: the ESP32 UART driver's async API implementation
- * hard-requires DMA channel wiring in devicetree, not just a Kconfig
- * flag -- uart_esp32_async_tx()/uart_esp32_async_rx_enable() return
- * -ENOTSUP outright if config->tx_dma_channel/rx_dma_channel are left
- * at their unconfigured default (0xFF), which only happens when a
- * `dmas` property is absent (see ESP32_DT_INST_DMA_CTLR/_CELL in
- * include/zephyr/drivers/dma/dma_esp32.h -- confirmed by reading
- * drivers/serial/uart_esp32.c directly). Channels 0 (tx) and 1 (rx)
- * on the SoC's `dma` (GDMA) controller -- nothing else in this board's
- * default devicetree claims any GDMA channel, so both are free. The
- * `dma` node itself is `status = "disabled"` by default in
- * esp32s3_common.dtsi (same as every other peripheral node there) and
- * must be explicitly enabled too, or the driver has no
- * DEVICE_DT_GET()-able GDMA device to reference at all (confirmed by
- * an actual build attempt: referencing a disabled `&dma` node from
- * `dmas =` fails at compile time with an undeclared
- * `__device_dts_ord_*` symbol, not a devicetree-level error).
+ * No `dmas`/`dma-names`/`&dma` here: lora_e5_uart.c uses the plain
+ * Interrupt-Driven UART API (CONFIG_UART_INTERRUPT_DRIVEN), not the
+ * DMA-backed Async API -- see lora_e5_uart.c's file doc comment and
+ * docs/VERIFICATION_NEEDED.md for why that switch was made (an
+ * intermittent Zephyr/ESP32 GDMA+timer-interaction issue found during
+ * bring-up, not present with a plain interrupt+FIFO driver -- also
+ * independently confirmed by a bare, non-DMA ESP-IDF/Arduino
+ * passthrough sketch on these same pins working reliably).
  */
 
-&dma {
-	status = "okay";
-};
-
-&uart1 {
+&uart2 {
 	status = "okay";
 	current-speed = <9600>;
-	pinctrl-0 = <&uart1_default>;
+	pinctrl-0 = <&uart2_default>;
 	pinctrl-names = "default";
-	dmas = <&dma 0>, <&dma 1>;
-	dma-names = "tx", "rx";
+};
+
+&pinctrl {
+	i2c0_default: i2c0_default {
+		group1 {
+			pinmux = <I2C0_SDA_GPIO8>,
+				 <I2C0_SCL_GPIO9>;
+			bias-pull-up;
+			drive-open-drain;
+			output-high;
+		};
+	};
+
+	uart2_default: uart2_default {
+		group1 {
+			pinmux = <UART2_TX_GPIO40>;
+			output-high;
+		};
+
+		group2 {
+			pinmux = <UART2_RX_GPIO39>;
+			bias-pull-up;
+		};
+	};
 };

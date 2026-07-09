@@ -4,20 +4,31 @@
 
 menuconfig LORA_E5
 	bool "LoRa-E5-HF LoRaWAN modem library"
-	depends on UART_ASYNC_API
-	select GPIO
+	depends on UART_INTERRUPT_DRIVEN
+	depends on GPIO
 	help
 	  Event-driven Zephyr library managing the full LoRa-E5-HF modem
 	  lifecycle (boot/config/join/send/sleep/recovery) through the
 	  module's AT command firmware. See modules/lora_e5/docs/ for the
 	  full architecture.
 
-	  Requires CONFIG_UART_ASYNC_API=y (and whatever the target board's
-	  serial driver needs to support it, e.g. CONFIG_SERIAL_SUPPORT_ASYNC)
-	  to be enabled explicitly by the application -- deliberately a
-	  `depends on`, not a `select`: unlike select, this doesn't risk
+	  Requires CONFIG_UART_INTERRUPT_DRIVEN=y and CONFIG_GPIO=y to be
+	  enabled explicitly by the application -- deliberately `depends
+	  on` for both, not `select`: unlike select, this doesn't risk
 	  forcing an unsatisfiable Kconfig combination on a board whose
-	  serial driver can't actually support the async API.
+	  serial driver can't actually support interrupt-driven UART, and
+	  (confirmed empirically) `select GPIO` combined with `depends on
+	  UART_INTERRUPT_DRIVEN` triggers a Kconfig dependency-loop error
+	  in this Zephyr tree's driver graph (I2C -> MFD ->
+	  GPIO_ITE_IT8801 -> MFD -> GPIO -> ... -> I2C, none of which this
+	  module touches) that `depends on GPIO` does not.
+
+	  lora_e5_uart.c originally used the UART Async API, but that was
+	  switched to Interrupt-Driven during ESP32-S3 bring-up -- see
+	  lora_e5_uart.c's file doc comment and
+	  docs/VERIFICATION_NEEDED.md for why (a GDMA/timer-interaction
+	  issue observed only via the Async API's ESP32 backend, not
+	  present with a plain interrupt+FIFO driver).
 
 if LORA_E5
 

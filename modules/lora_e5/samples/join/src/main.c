@@ -16,22 +16,21 @@
 LOG_MODULE_REGISTER(lora_e5_join_sample, LOG_LEVEL_INF);
 
 /**
- * DevEui confirmed live against this project's own real LoRa-E5-HF
- * (firmware V4.0.11, previously on /dev/ttyUSB1) -- see
- * docs/VERIFICATION_NEEDED.md's resolved "AT+ID SET syntax" entry.
- *
- * AppEui/AppKey below are PLACEHOLDERS -- AppKey is write-only on the
- * module (AT+KEY can never be queried back, per spec Table 4-2), so it
- * cannot be captured the same way DevEui was. Replace both with your
- * ChirpStack device profile's actual provisioned values before
- * flashing; joining will simply fail (JOIN_FAILED, logged below) with
- * these placeholders.
+ * DevEui/AppEui/AppKey confirmed live against this project's own real
+ * LoRa-E5-HF (firmware V4.0.11) and this project's own ChirpStack
+ * device profile -- DevEui via AT+ID (see
+ * docs/VERIFICATION_NEEDED.md's resolved "AT+ID SET syntax" entry),
+ * AppEui/AppKey provisioned directly from the ChirpStack device
+ * profile. Confirmed end-to-end: real OTAA join (JOIN_SUCCESS) and a
+ * real uplink observed in ChirpStack's device event log, over
+ * esp32s3_devkitc's UART2 (GPIO39/40). Replace all three with your own
+ * device's values if reusing this sample against a different module
+ * or network server.
  */
 static const struct lora_e5_otaa_config otaa_cfg = {
 	.dev_eui = { .bytes = { 0x26, 0xC5, 0x18, 0xF8, 0xEF, 0x84, 0x0E, 0x5D } },
-	.app_eui = { .bytes = { 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00 } }, /* REPLACE ME */
-	.app_key = { .bytes = { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-				 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x0F } }, /* REPLACE ME */
+	.app_eui = { .bytes = { 0x78, 0x36, 0xFC, 0xAF, 0xA7, 0x3B, 0x3E, 0xD3 } },
+	.app_key = { .bytes = { 0x5B, 0xD1, 0x95, 0x9C, 0x42, 0x57, 0xCD, 0x92, 0x15, 0x30, 0x53, 0xFD, 0x66, 0xDC, 0xF9, 0x59 } },
 };
 
 static const uint8_t test_payload[] = { 0xDE, 0xAD, 0xBE, 0xEF };
@@ -79,7 +78,7 @@ static void event_cb(const struct lora_e5_app_event *event, void *user_data)
 int main(void)
 {
 	const struct lora_e5_hw_config hw = {
-		.uart_dev = DEVICE_DT_GET(DT_NODELABEL(uart1)),
+		.uart_dev = DEVICE_DT_GET(DT_NODELABEL(uart2)),
 		.reset_gpio = NULL, /* AT+RESET only -- no reset-gpios wired on this board */
 	};
 	int rc;

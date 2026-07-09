@@ -282,7 +282,13 @@ ZTEST(lora_e5_modem_manager, test_probe_success)
 	zassert_equal(mock.send_count, 1, NULL);
 	zassert_mem_equal(mock.last_cmd, "AT", 2, NULL);
 
-	feed_line("OK");
+	/* "+AT: OK", not bare "OK" -- confirmed against real hardware
+	 * (firmware V4.0.11): see docs/VERIFICATION_NEEDED.md's te_probe
+	 * entry. A bare "OK" was the wrong test vector for this exact
+	 * reason -- it let a real matcher bug (BARE_OK instead of
+	 * ANY_URC/prefix="AT") pass silently in tests.
+	 */
+	feed_line("+AT: OK");
 
 	zassert_equal(event_log_count, 1, NULL);
 	zassert_equal(event_log[0].type, LORA_E5_FSM_EVT_PROBE_RESULT, NULL);

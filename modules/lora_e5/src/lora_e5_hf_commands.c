@@ -59,8 +59,16 @@ static int hex_encode(const uint8_t *data, size_t len, char *out, size_t out_cap
 /* ------------------------------------------------------------------- */
 
 static const struct lora_e5_at_terminal_event te_probe[] = {
-	{ .prefix = NULL, .remainder = NULL,
-	  .match_mode = LORA_E5_AT_MATCH_BARE_OK,
+	/* ANY_URC (prefix-only), not BARE_OK -- confirmed against real
+	 * hardware (firmware V4.0.11): "AT" gets back "+AT: OK", not a
+	 * bare "OK". BARE_OK requires line->prefix[0] == '\0'
+	 * (line_matches_entry(), lora_e5_cmd_queue.c), which "+AT: OK"
+	 * (prefix="AT") never satisfies, so the probe step silently never
+	 * completed -- same pre-existing-bug class as te_reset/te_fdefault
+	 * above (see docs/VERIFICATION_NEEDED.md).
+	 */
+	{ .prefix = "AT", .remainder = NULL,
+	  .match_mode = LORA_E5_AT_MATCH_ANY_URC,
 	  .result_tag = LORA_E5_MM_TAG_OK },
 	ANY_ERROR_ENTRY,
 };

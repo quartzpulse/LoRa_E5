@@ -1,37 +1,54 @@
 /**
  * @file lora_e5_uart.c
- * @brief UART Async API backend. Generic Zephyr UART Async API code --
+ * @brief UART Interrupt-Driven API backend. Generic Zephyr code --
  * nothing ESP32-specific here, only the board devicetree overlay is
  * chip-specific (Phase 1 §2.1).
  *
- * Split per Phase 1 §4: the uart_callback_set() callback (may run in
- * ISR/driver-internal context -- treated as ISR-context throughout
- * this file for safety) only accumulates bytes and detects line
- * completion ("\r\n", spec §2.1/§2.3) into a small fixed-size assembly
- * buffer -- no parsing here. Each completed line is copied into a
- * CONFIG_LORA_E5_UART_LINE_QUEUE_DEPTH-deep k_msgq of fixed-size line
- * structs; a k_work item on the caller-supplied rx_wq drains that
- * queue, calling lora_e5_at_parse_line() then lora_e5_at_process_line()
- * for each line.
+ * Switched from the UART Async API to the Interrupt-Driven API during
+ * ESP32-S3 hardware bring-up (see docs/VERIFICATION_NEEDED.md): the
+ * Async API's ESP32 backend is GDMA-based, and an intermittent, still
+ * only partially-understood Zephyr/ESP32 timer-interaction bug was
+ * observed there (a scheduled lora_e5_cmd_queue.c command timeout
+ * occasionally never firing at the hardware level despite the
+ * scheduling call itself reporting success) that a plain
+ * interrupt+FIFO UART driver doesn't exercise. Confirmed independently
+ * against the real module with a bare ESP-IDF/Arduino passthrough
+ * sketch using the same GPIO39/40 pins and the *non-DMA* ESP-IDF UART
+ * driver: reliable AT/join/send round trips every time, ruling out
+ * wiring/module/credentials as the cause. The Interrupt-Driven API
+ * here is the Zephyr-portable equivalent of that same non-DMA
+ * approach.
+ *
+ * The uart_irq_callback_set() callback runs in ISR/driver-internal
+ * context -- treated as ISR-context throughout this file for safety.
+ * RX: uart_irq_rx_enable() once at init (left permanently enabled,
+ * unlike the Async API's ping-pong re-arming); on each RX-ready
+ * interrupt, drains the hardware FIFO via uart_fifo_read() into a
+ * small per-line assembly buffer, detecting line completion on
+ * "\r\n"/"\n" (spec §2.1/§2.3) -- no parsing here. Each completed line
+ * is copied into a CONFIG_LORA_E5_UART_LINE_QUEUE_DEPTH-deep k_msgq of
+ * fixed-size line structs; a k_work item on the caller-supplied rx_wq
+ * drains that queue, calling lora_e5_at_parse_line() then
+ * lora_e5_at_process_line() for each line.
  *
  * TX: implements the lora_e5_at_send_fn_t-conforming send function,
  * appends "\r\n" (not part of any lora_e5_hf_commands.c command string
  * -- confirmed by reading lora_e5_hf_build_mode() etc., so the
- * transport owns the terminator) into a static scratch buffer, calls
- * uart_tx(), and tracks single-in-flight TX state with an atomic flag
- * (not a mutex -- UART_TX_DONE/UART_TX_ABORTED clear it from the same
- * ISR-context callback that handles RX, where a mutex would be unsafe).
- *
- * RX re-arming uses the same ping-pong UART_RX_BUF_REQUEST pattern as
- * external/zephyr/samples/drivers/uart/async_api/src/main.c.
+ * transport owns the terminator) into a static scratch buffer, and
+ * drives it out via uart_irq_tx_enable()/uart_fifo_fill() across
+ * possibly several TX-ready interrupts (the ESP32 hardware TX FIFO is
+ * far smaller than the 528+2-byte max command length). Single-in-flight
+ * TX state uses an atomic flag (not a mutex -- cleared from the same
+ * ISR-context callback that handles RX, where a mutex would be
+ * unsafe).
  *
  * Known gap, flagged rather than silently worked around (see
  * docs/VERIFICATION_NEEDED.md): an overlong or otherwise malformed RX
  * line is dropped and the assembly buffer reset, but there is no path
  * in the current lora_e5_at.h contract for this backend (which has no
  * FSM/Modem-Manager reference by design, per Phase 1 §2.1) to signal
- * that fault upward the way a TX-side uart_tx() failure naturally does
- * via lora_e5_at_send_fn_t's return value. Logged only.
+ * that fault upward the way a TX-side send failure naturally does via
+ * lora_e5_at_send_fn_t's return value. Logged only.
  */
 
 #include "lora_e5_internal.h"
@@ -51,20 +68,6 @@ LOG_MODULE_REGISTER(lora_e5_uart, CONFIG_LORA_E5_LOG_LEVEL);
  */
 #define UART_TX_BUF_SIZE (528 + 2)
 
-/* Chunk size for the async RX ping-pong buffers -- independent of
- * CONFIG_LORA_E5_RX_BUFFER_SIZE (the *line* assembly buffer): this is
- * just how much raw, possibly line-fragment, data the driver hands us
- * per UART_RX_RDY event.
- */
-#define UART_RX_CHUNK_SIZE 64
-
-/* Inactivity timeout (microseconds, per uart_rx_enable()'s documented
- * unit) before the driver delivers whatever it has, even if the chunk
- * buffer isn't full -- matches
- * external/zephyr/samples/drivers/uart/async_api's own value.
- */
-#define UART_RX_INACTIVITY_TIMEOUT_US 100
-
 struct uart_line {
 	char text[CONFIG_LORA_E5_RX_BUFFER_SIZE];
 	size_t len;
@@ -76,7 +79,7 @@ static const struct device *g_uart_dev;
 static struct k_work_q *g_rx_wq;
 static struct k_work g_line_drain_work;
 
-/* Line assembly state -- touched only from uart_callback() (ISR/driver
+/* Line assembly state -- touched only from uart_isr() (ISR/driver
  * context); no lock needed since it has exactly one writer.
  */
 static char g_assembly_buf[CONFIG_LORA_E5_RX_BUFFER_SIZE];
@@ -84,10 +87,13 @@ static size_t g_assembly_len;
 static bool g_discarding_overlong_line;
 static uint32_t g_overlong_line_count;
 
-static uint8_t g_rx_chunk_buf[2][UART_RX_CHUNK_SIZE];
-static uint8_t g_rx_chunk_idx;
-
+/* TX state -- touched only from uart_isr() and lora_e5_uart_send();
+ * g_tx_busy is the single-writer-at-a-time guard between them (same
+ * atomic-not-mutex reasoning as the file doc comment).
+ */
 static char g_tx_buf[UART_TX_BUF_SIZE];
+static size_t g_tx_len;
+static size_t g_tx_offset;
 static atomic_t g_tx_busy = ATOMIC_INIT(0);
 
 /* ------------------------------------------------------------------- */
@@ -173,40 +179,38 @@ static void handle_rx_byte(uint8_t c)
 }
 
 /* ------------------------------------------------------------------- */
-/* UART async event callback (ISR/driver context)                       */
+/* UART interrupt-driven callback (ISR/driver context)                  */
 /* ------------------------------------------------------------------- */
 
-static void uart_callback(const struct device *dev, struct uart_event *evt, void *user_data)
+static void uart_isr(const struct device *dev, void *user_data)
 {
 	ARG_UNUSED(user_data);
 
-	switch (evt->type) {
-	case UART_TX_DONE:
-	case UART_TX_ABORTED:
-		atomic_set(&g_tx_busy, 0);
-		break;
+	while (uart_irq_update(dev) > 0 && uart_irq_is_pending(dev)) {
+		if (uart_irq_rx_ready(dev)) {
+			uint8_t buf[32];
+			int n = uart_fifo_read(dev, buf, sizeof(buf));
 
-	case UART_RX_BUF_REQUEST:
-		/* Best-effort: a failure here just means the driver has
-		 * nowhere to put the next chunk until re-armed elsewhere;
-		 * there is no crash-safe recovery available from this
-		 * context.
-		 */
-		(void)uart_rx_buf_rsp(dev, g_rx_chunk_buf[g_rx_chunk_idx],
-				      sizeof(g_rx_chunk_buf[0]));
-		g_rx_chunk_idx = g_rx_chunk_idx ? 0 : 1;
-		break;
-
-	case UART_RX_RDY:
-		for (size_t i = 0; i < evt->data.rx.len; i++) {
-			handle_rx_byte(evt->data.rx.buf[evt->data.rx.offset + i]);
+			for (int i = 0; i < n; i++) {
+				handle_rx_byte(buf[i]);
+			}
 		}
-		break;
 
-	case UART_RX_BUF_RELEASED:
-	case UART_RX_DISABLED:
-	default:
-		break;
+		if (uart_irq_tx_ready(dev)) {
+			if (g_tx_offset < g_tx_len) {
+				int n = uart_fifo_fill(dev, (const uint8_t *)&g_tx_buf[g_tx_offset],
+							g_tx_len - g_tx_offset);
+
+				if (n > 0) {
+					g_tx_offset += (size_t)n;
+				}
+			}
+
+			if (g_tx_offset >= g_tx_len) {
+				uart_irq_tx_disable(dev);
+				atomic_set(&g_tx_busy, 0);
+			}
+		}
 	}
 }
 
@@ -231,13 +235,11 @@ static int lora_e5_uart_send(const char *cmd, size_t len)
 	memcpy(g_tx_buf, cmd, len);
 	g_tx_buf[len] = '\r';
 	g_tx_buf[len + 1] = '\n';
+	g_tx_len = len + 2;
+	g_tx_offset = 0;
 
-	int rc = uart_tx(g_uart_dev, g_tx_buf, len + 2, SYS_FOREVER_US);
-
-	if (rc != 0) {
-		atomic_set(&g_tx_busy, 0);
-	}
-	return rc;
+	uart_irq_tx_enable(g_uart_dev);
+	return 0;
 }
 
 /* ------------------------------------------------------------------- */
@@ -256,24 +258,21 @@ int lora_e5_uart_init(const struct device *uart_dev, struct k_work_q *rx_wq)
 	g_uart_dev = uart_dev;
 	g_rx_wq = rx_wq;
 	atomic_set(&g_tx_busy, 0);
+	g_tx_len = 0;
+	g_tx_offset = 0;
 	g_assembly_len = 0;
 	g_discarding_overlong_line = false;
 	g_overlong_line_count = 0;
-	g_rx_chunk_idx = 1;
 	k_msgq_purge(&g_line_msgq);
 	k_work_init(&g_line_drain_work, line_drain_work_handler);
 
-	int rc = uart_callback_set(uart_dev, uart_callback, NULL);
+	int rc = uart_irq_callback_user_data_set(uart_dev, uart_isr, NULL);
 
 	if (rc != 0) {
 		return rc;
 	}
 
-	rc = uart_rx_enable(uart_dev, g_rx_chunk_buf[0], sizeof(g_rx_chunk_buf[0]),
-			     UART_RX_INACTIVITY_TIMEOUT_US);
-	if (rc != 0) {
-		return rc;
-	}
+	uart_irq_rx_enable(uart_dev);
 
 	lora_e5_at_set_transport(lora_e5_uart_send);
 	return 0;

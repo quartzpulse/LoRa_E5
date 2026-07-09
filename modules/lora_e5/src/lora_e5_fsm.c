@@ -196,8 +196,17 @@ static void fail_recovery_pass(void)
 
 	LOG_WRN("recovery pass %u failed, retrying in %d ms",
 		g_fsm.recovery_pass_count, RECOVERY_PASS_RETRY_DELAY_MS);
-	k_work_schedule_for_queue(g_fsm_wq, &g_recovery_retry_work,
-				   K_MSEC(RECOVERY_PASS_RETRY_DELAY_MS));
+	/* k_work_reschedule_for_queue(), not k_work_schedule_for_queue() --
+	 * this can run from *inside* g_recovery_retry_work's own handler
+	 * (recovery_retry_expired() -> enter_recovery() -> here, when
+	 * do_recovery_reset() fails synchronously), where the kernel still
+	 * has it marked running and a plain schedule call would silently
+	 * no-op (see the matching, hardware-confirmed fix in
+	 * lora_e5_cmd_queue.c's timeout_handler()/
+	 * try_dispatch_and_cascade_locked()).
+	 */
+	k_work_reschedule_for_queue(g_fsm_wq, &g_recovery_retry_work,
+				     K_MSEC(RECOVERY_PASS_RETRY_DELAY_MS));
 }
 
 /** @brief Enter (or restart the current pass of) the recovery ladder.

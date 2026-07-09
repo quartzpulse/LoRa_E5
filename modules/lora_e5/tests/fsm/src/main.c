@@ -123,7 +123,11 @@ static const char *happy_path_responder(const char *cmd, size_t len)
 		return "+RESET: OK";
 	}
 	if (strcmp(cmd, "AT") == 0) {
-		return "OK";
+		/* "+AT: OK", not bare "OK" -- confirmed against real
+		 * hardware (firmware V4.0.11); see
+		 * docs/VERIFICATION_NEEDED.md's te_probe entry.
+		 */
+		return "+AT: OK";
 	}
 	if (strncmp(cmd, "AT+MODE", 7) == 0) {
 		return "+MODE: OK";
@@ -185,7 +189,7 @@ static const char *boot_then_pause_before_id_responder(const char *cmd, size_t l
 		return "+RESET: OK";
 	}
 	if (strcmp(cmd, "AT") == 0) {
-		return "OK";
+		return "+AT: OK";
 	}
 	if (strncmp(cmd, "AT+MODE", 7) == 0) {
 		return "+MODE: OK";

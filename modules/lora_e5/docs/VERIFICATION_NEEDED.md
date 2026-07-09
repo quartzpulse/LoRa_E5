@@ -252,3 +252,161 @@ should never hit this path.
   `g_port_valid`, reissues `AT+PORT=` only when the caller's port
   differs) -- this test empirically validates that fix was both
   necessary and sufficient.
+
+## Resolved 2026-07-09 (real hardware: LoRa-E5-HF, ESP32-S3 UART2/GPIO39-40, firmware V4.0.11)
+
+- ~~Command retries could permanently lose their own timeout~~ --
+  **[Certain]**, confirmed by an actual flash+run with temporary
+  `LOG_ERR` instrumentation logging `k_work_schedule_for_queue()`'s
+  return code directly. `lora_e5_cmd_queue.c`'s `timeout_handler()`
+  (the delayed-work handler for `timeout_work`) resends a timed-out
+  command and rearms its own timeout by calling
+  `k_work_schedule_for_queue(rx_wq, &timeout_work, ...)` -- from
+  *inside* `timeout_work`'s own currently-running handler (both the
+  per-command retry branch directly in `timeout_handler()`, and via
+  `try_dispatch_and_cascade_locked()` when a match/timeout resolves
+  and immediately dispatches the next queued command). Zephyr's
+  `k_work_schedule_for_queue()` is documented as a no-op "if the work
+  item is already scheduled or submitted" -- and the kernel still
+  considers a `k_work_delayable` "submitted" while its own handler is
+  running, so this self-rescheduling call silently did nothing
+  (confirmed: return code `0`, meaning "already scheduled", not `1`).
+  The retry's resend went out over the wire correctly, but with no
+  timeout backing it -- if that resend's response was ever slow or
+  absent, the command (and the whole boot sequence behind it) would
+  hang forever with no recovery, no log, nothing, since the one
+  mechanism that would have caught it never actually got armed. This
+  is almost certainly why the probe step above appeared flaky rather
+  than consistently broken across different capture runs before both
+  bugs were found: the *first* attempt's timeout is scheduled from a
+  different, unaffected call site (the initial dispatch, not from
+  inside `timeout_work`), so it always fired correctly; only a retry's
+  *second* timeout was silently dead, and whether that mattered
+  depended on whether the retried command's response happened to
+  arrive before the (nonexistent) backup timeout would have fired.
+  native_sim's test suites never caught this because every mocked
+  responder answers near-instantly, so a real retry-then-actually-
+  time-out sequence never got exercised end-to-end -- only real UART
+  timing (or a deliberately slow/absent mock response with a long
+  enough wait) exposes it. Fixed: the two self-rescheduling call sites
+  in `lora_e5_cmd_queue.c` (`timeout_handler()`'s retry branch, and
+  `try_dispatch_and_cascade_locked()`), plus one narrower instance of
+  the identical pattern in `lora_e5_fsm.c`'s `fail_recovery_pass()`
+  (reachable from `recovery_retry_expired()` -> `enter_recovery()` ->
+  here when `do_recovery_reset()` fails synchronously), now use
+  `k_work_reschedule_for_queue()` instead, which unconditionally
+  cancels and re-arms even while the work item is still marked
+  running. No test added: reproducing the exact "self-reschedule from
+  within your own still-running handler" kernel state reliably under
+  native_sim would need either real UART-like latency or invasive
+  fakery of `k_work_delayable` internals: not attempted here, flagged
+  for a future pass instead.
+- ~~`te_probe`'s match mode~~ -- **[Certain]**. The probe step
+  (`lora_e5_hf_build_probe()`, `lora_e5_hf_commands.c`) used
+  `LORA_E5_AT_MATCH_BARE_OK` (requires `line->prefix[0] == '\0'`),
+  assuming plain `AT` gets back a bare `"OK"`. Captured directly off
+  the real module: `AT` -> `"+AT: OK"` (prefix `"AT"`, same
+  `+PREFIX: OK` convention as every other command in this file). A
+  bare-`OK` match can never fire against that response, so
+  `LORA_E5_FSM_EVT_PROBE_RESULT` was never emitted and boot silently
+  hung in `CHECK_AT` until the caller's outer timeout -- with no
+  recovery-ladder warning logged, since the command layer never saw a
+  terminal failure either, just perpetual non-match. Same bug class as
+  the already-documented `te_reset`/`te_fdefault` fix above. Fixed:
+  `te_probe` now uses `LORA_E5_AT_MATCH_ANY_URC` with `prefix = "AT"`,
+  matching the established convention. `tests/modem_manager/src/main.c`
+  (`test_probe_success`) and `tests/fsm/src/main.c`'s auto-responders
+  were also fixed -- they had been mocking the same wrong bare-`"OK"`
+  vector, which is exactly how this got past the existing test suite.
+- ~~ESP32 GDMA devicetree `dmas` channel-index parity~~ -- **[Certain]**,
+  confirmed by an actual flash+run with temporary `LOG_ERR`
+  instrumentation in `lora_e5_uart_send()`. `external/zephyr`'s
+  `drivers/dma/dma_esp32_gdma.c` derives the physical GDMA pair as
+  `channel_id = channel / 2`, and *separately* its IRQ dispatch
+  hardcodes which parity is which: `dma_esp32_isr_handle_rx()`/
+  `_handle_tx()` (and the per-pair ISRs generated by
+  `DMA_ESP32_DEFINE_IRQ_HANDLER`) look up the completion callback via
+  `dma_channel[pair*2]` for RX and `dma_channel[pair*2+1]` for TX --
+  unconditionally, regardless of which direction was actually
+  `dma_config()`'d onto that array index. `dma_esp32_config()` itself
+  has no such restriction (it dispatches on
+  `config_dma->channel_direction`, so a "wrong-parity" TX channel
+  configures and `uart_tx()` returns 0 successfully) -- so the failure
+  is silent and delayed: the real hardware TX-EOF interrupt fires, but
+  the ISR reads the *other* array slot (never configured, `cb ==
+  NULL`), drops the completion event, and the UART backend's
+  single-in-flight TX-busy flag never clears. Every command after the
+  first then fails immediately with our own `-EBUSY`, easy to
+  misdiagnose as a DMA-channel-conflict/busy-status bug (an earlier
+  pass here misdiagnosed it exactly that way before an instrumented
+  run pinned it down). Fixing the parity (`dmas = <&dma 1>, <&dma 2>`)
+  did resolve *this specific* symptom, but a second, harder-to-pin
+  GDMA-related issue remained -- see the next entry. Moot now: the
+  Async API + GDMA path was abandoned entirely (below), so this
+  finding is kept only as a record of a real, independently valid
+  Zephyr/hal_espressif driver-level bug, in case a future pass ever
+  goes back to the Async API on this or another ESP32 board.
+- ~~Intermittent "scheduled command timeout never fires" hang~~ --
+  **[Certain]** it happened, root cause still only narrowed, not
+  nailed down -- and no longer relevant, because the code path it
+  lived in (Async API + GDMA) was replaced. After fixing the DMA
+  parity bug above, boot still hung intermittently and
+  unpredictably (sometimes at the first `AT` probe, sometimes one
+  command later, never at a fixed point) with symptoms distinct from
+  every bug already documented here: `k_work_schedule_for_queue()`/
+  `k_work_reschedule_for_queue()` would report success (return code
+  confirms the timeout was accepted) and the preceding TX would
+  complete (`UART_TX_DONE` observed), yet `lora_e5_cmd_queue.c`'s
+  `timeout_handler()` would sometimes simply never fire -- no retry,
+  no error, no log, indefinitely. A same-process, real (non-DMA)
+  ESP-IDF/Arduino UART passthrough sketch on the identical
+  GPIO39/40 wiring, run interleaved with these tests, round-tripped
+  `AT`/`AT+JOIN`/`AT+MSGHEX` reliably every time and independently
+  joined + sent a real uplink (confirmed in ChirpStack) -- ruling out
+  wiring, the module, and the OTAA credentials as the cause, and
+  pointing squarely at the Zephyr ESP32 Async-API/GDMA stack. A
+  recurring no-op `k_work_delayable` ("keep the kernel's global
+  timeout list non-empty") fixed it in some but not all flash+run
+  attempts -- inconsistent enough that it was **not** shipped
+  (removed after failing two repeat trials); disabling
+  `CONFIG_TICKLESS_KERNEL` did not help either. Root cause never
+  conclusively identified. Resolved by working around it rather than
+  fixing it: `lora_e5_uart.c` was rewritten to use the plain
+  Interrupt-Driven UART API (`CONFIG_UART_INTERRUPT_DRIVEN`,
+  `uart_irq_*`/`uart_fifo_*`) instead of the Async API, eliminating
+  GDMA from the picture entirely -- the same approach the working
+  Arduino sketch used. Confirmed by multiple full flash+run cycles:
+  boot/config/join/send all completing cleanly with deterministic,
+  repeatable timing and zero unexplained hangs, including one run
+  where `AT+JOIN` legitimately timed out (real network-side timing)
+  and the recovery ladder correctly recovered back to `READY` right
+  on schedule -- i.e. the timeout/retry machinery itself now behaves
+  exactly as designed under real hardware timing. If a future pass
+  ever needs the Async API back (e.g. for DMA's lower CPU overhead
+  on very high uplink rates), this bug needs to be actually
+  root-caused first, not just avoided.
+- ~~UART1 (GPIO17/18) vs UART2 (GPIO39/40) on esp32s3_devkitc~~ --
+  switched during this bring-up pass to UART2/GPIO39-40 for the
+  physical wiring in use; independent of the Async-vs-Interrupt-Driven
+  UART API choice, so this is a wiring choice, not a finding. See
+  `samples/join/boards/esp32s3_devkitc_procpu.overlay`.
+- ~~`modules/lora_e5/Kconfig`'s `select GPIO` triggering a Kconfig
+  dependency-loop error~~ -- **[Certain]**. Switching
+  `menuconfig LORA_E5`'s UART dependency from `depends on
+  UART_ASYNC_API` to `depends on UART_INTERRUPT_DRIVEN` (previous
+  entry) exposed a pre-existing structural cycle in this Zephyr
+  tree's driver Kconfig graph (`I2C -> MFD -> GPIO_ITE_IT8801 -> MFD
+  -> GPIO -> ... -> I2C`, none of which this module touches or
+  enables) -- kconfiglib detects this at parse time from the
+  declared `select`/reverse-dependency expressions themselves,
+  independent of what any symbol's final value ends up being, so no
+  amount of explicitly setting individual symbols to `n` broke it.
+  Confirmed via a minimal isolated probe app that the trigger is
+  specifically `select GPIO` (a "hard" reverse dependency) combined
+  with `depends on UART_INTERRUPT_DRIVEN` being visible -- swapping
+  `select GPIO` for `depends on GPIO` (a "soft" one, and something
+  the application already sets explicitly via `CONFIG_GPIO=y`
+  anyway) resolves the loop with no other changes. A Zephyr Kconfig
+  tree issue, not a lora_e5 logic bug, but the module's own
+  `select` was the direct trigger, so fixed here rather than filed
+  upstream only.

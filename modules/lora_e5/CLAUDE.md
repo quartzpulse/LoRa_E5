@@ -111,24 +111,27 @@ listed here as open gaps anymore. Summary of what still blocks real use:
 ## Implementation status
 
 As of the Phase 3 bring-up pass (`docs/Phase3-ESP32S3-Bringup-Plan.md`),
-everything through hardware bring-up is implemented and building green:
-`src/lora_e5_modem_manager.c`, `src/lora_e5_fsm.c`, `src/lora_e5_events.c`,
-`src/lora_e5.c`, `src/lora_e5_internal.h`, `src/lora_e5_uart.c` (real
-UART Async API backend), module-root `Kconfig`/`CMakeLists.txt`/
-`zephyr/module.yml`, `tests/fsm/` + `tests/mock_uart/` (all four test
-suites pass: `west twister -p native_sim -T modules/lora_e5/tests -v`),
-the `esp32s3_devkitc` UART1 board overlay
-(`samples/join/boards/esp32s3_devkitc_procpu.overlay`), and
-`samples/join/` (builds and links a real flashable image for
-`esp32s3_devkitc/esp32s3/procpu` -- confirmed by an actual build, not
-just review).
+everything through hardware bring-up is implemented, building green, and
+**verified end-to-end against real hardware**: boot -> config -> join ->
+send confirmed working on real esp32s3_devkitc + LoRa-E5-HF hardware,
+with a real uplink observed in ChirpStack. `src/lora_e5_modem_manager.c`,
+`src/lora_e5_fsm.c`, `src/lora_e5_events.c`, `src/lora_e5.c`,
+`src/lora_e5_internal.h`, `src/lora_e5_uart.c` (real UART
+**Interrupt-Driven** API backend -- switched from the Async API during
+bring-up; see `lora_e5_uart.c`'s file doc comment and
+`docs/VERIFICATION_NEEDED.md` for why), module-root
+`Kconfig`/`CMakeLists.txt`/`zephyr/module.yml`, `tests/fsm/` +
+`tests/mock_uart/` (all four test suites pass: `west twister -p
+native_sim -T modules/lora_e5/tests -v`), the `esp32s3_devkitc` **UART2**
+board overlay (`samples/join/boards/esp32s3_devkitc_procpu.overlay`,
+GPIO39/40 -- switched from UART1/GPIO17-18 during bring-up), and
+`samples/join/` (builds, flashes, and runs a real image on
+`esp32s3_devkitc/esp32s3/procpu` -- confirmed by an actual flash+run, not
+just a build). `samples/join/build.sh` wraps the
+`ZEPHYR_EXTRA_MODULES=...` build/flash incantation for reuse.
 
 Not yet implemented: `samples/uplink/`, `samples/shell/` (no stated
-requirement drove these yet); real hardware bring-up itself (flashing,
-join/send verification against ChirpStack) still needs to happen on
-the physical board -- see `docs/Phase3-ESP32S3-Bringup-Plan.md`'s
-Verification section for the exact steps and what's needed from you
-(AppKey, ESP32-S3 serial device node).
+requirement drove these yet).
 
 `README.md` at the module root also doesn't exist yet.
 

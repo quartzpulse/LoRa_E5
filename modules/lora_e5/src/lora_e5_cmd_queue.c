@@ -181,8 +181,28 @@ static size_t try_dispatch_and_cascade_locked(struct cb_invocation *out, size_t 
 			: -EIO;
 
 		if (rc == 0) {
-			k_work_schedule_for_queue(rx_wq, &timeout_work,
-						   K_MSEC(active.desc.timeout_ms));
+			/* k_work_reschedule_for_queue(), not
+			 * k_work_schedule_for_queue() -- this path can run
+			 * from *inside* timeout_handler() itself (a retry
+			 * re-dispatching after its own timeout fired,
+			 * cascading through resolve_current_locked() above).
+			 * At that point timeout_work is still marked running
+			 * by the kernel (its own handler hasn't returned
+			 * yet), and k_work_schedule_for_queue() is
+			 * documented as a no-op "if the work item is already
+			 * scheduled or submitted" -- confirmed against real
+			 * hardware: this silently dropped the retry's new
+			 * timeout (schedule call returned 0, meaning nothing
+			 * was armed), so a retry whose resend also went
+			 * unanswered would then wait forever with no backup
+			 * timeout. k_work_reschedule_for_queue() cancels and
+			 * unconditionally re-arms even mid-run, which is
+			 * exactly "restart my own timer" -- safe for both
+			 * this self-rescheduling case and the normal
+			 * fresh-dispatch-after-RX-match case.
+			 */
+			k_work_reschedule_for_queue(rx_wq, &timeout_work,
+						     K_MSEC(active.desc.timeout_ms));
 			return n;
 		}
 
@@ -261,7 +281,18 @@ static void timeout_handler(struct k_work *work)
 				: -EIO;
 
 			if (rc == 0) {
-				k_work_schedule_for_queue(
+				/* k_work_reschedule_for_queue(), not
+				 * k_work_schedule_for_queue() -- see the
+				 * matching comment in
+				 * try_dispatch_and_cascade_locked(). This
+				 * call is *inside* timeout_work's own
+				 * handler, so the kernel still has it marked
+				 * running; k_work_schedule_for_queue() would
+				 * silently no-op here (confirmed against real
+				 * hardware), leaving this retry's resend
+				 * with no timeout backing it at all.
+				 */
+				k_work_reschedule_for_queue(
 					rx_wq, &timeout_work,
 					K_MSEC(active.desc.timeout_ms));
 			} else {
