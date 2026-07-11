@@ -154,6 +154,17 @@ sleep) -- see `src/main.c`'s file doc comment and
 `status_led_stop()` (synchronous) is used instead of
 `status_led_set_state(STATUS_LED_SLEEP)` before power-off.
 
+The uplink payload now carries a BME680 environmental reading (I2C0,
+`boards/esp32s3_devkitc_procpu.overlay`) ahead of the boot counter --
+**not yet verified against real hardware**, no BME680 was physically
+connected during this project's other bring-up sessions. Confirmed on
+real hardware only that the code path is correct: with no sensor wired
+up, `device_is_ready()` correctly fails and the payload gracefully
+falls back to boot_count-only, without disturbing the rest of the
+cycle. See `docs/VERIFICATION_NEEDED.md`'s "Not yet resolved: BME680"
+section for the two things (I2C address, fixed-point scaling) to check
+once a real sensor is wired up.
+
 `lora_e5_resume()`/`lora_e5_resume_sync()` (public API, `lora_e5.h`) is
 a real, shipped alternative to `lora_e5_start()`+`lora_e5_join()`: a new
 `LORA_E5_STATE_RESUMING` FSM state probes without `AT+RESET` and, on

@@ -644,3 +644,38 @@ should never hit this path.
   MQTT/OTA/provisioning states are deliberately not used --
   `samples/device_node` has none of those concepts -- see that
   decision recorded in `src/main.c`'s file doc comment.
+
+---
+
+## Not yet resolved: BME680 environmental sensor in the uplink payload (added 2026-07-12)
+
+**[Guessing -- not yet verified against real hardware.]** No BME680 was
+connected during this project's other hardware bring-up sessions;
+confirmed on real hardware only that the *code path* is correct, not
+that real sensor data is correct:
+
+- `read_environment()`/`build_uplink_payload()` (`src/main.c`) and the
+  devicetree node (`boards/esp32s3_devkitc_procpu.overlay`, I2C0,
+  `reg = <0x76>`) build and boot cleanly.
+- Real-hardware run with no physical BME680 wired up: `device_is_ready()`
+  correctly returned false, logged `"BME680 not ready -- uplink will
+  omit sensor data"`, and the payload gracefully fell back to
+  boot_count-only (4 bytes) -- confirming the degradation path works
+  and the rest of the cycle (join, LED, send) is unaffected by the
+  sensor's absence.
+- **Not yet confirmed**: the success path. Two real hardware
+  assumptions need checking once a BME680 is actually wired to I2C0
+  (SDA=GPIO1, SCL=GPIO2, board's existing `i2c0_default` pinctrl, no
+  overlay change needed for the bus itself):
+  1. I2C address `0x76` assumes the sensor's SDO pin is tied low
+     (grounded) -- the common default for breakout boards that don't
+     break SDO out separately. If wired with SDO high, change `reg` in
+     the overlay to `0x77`.
+  2. The fixed-point scaling in `build_uplink_payload()` (temp x100,
+     pressure x10 in kPa, humidity x100, gas resistance raw ohms) was
+     derived from reading `bme680.c`'s own `sensor_channel_get()`
+     comments (`external/zephyr/drivers/sensor/bosch/bme680/bme680.c`),
+     not from a captured real reading -- worth a sanity check against
+     `LOG_INF("BME680: temp=...")`'s output the first time a real
+     sensor responds (should read a plausible room-temperature/
+     pressure/humidity value, not garbage).

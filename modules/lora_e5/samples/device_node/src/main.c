@@ -40,9 +40,22 @@
  * deep sleep, so skipping the synchronous off would leave the LED lit
  * at whatever color for the entire sleep interval, silently defeating
  * the point of a duty-cycled battery node.
+ *
+ * The uplink payload carries real data: a BME680 (I2C0, GPIO1=SDA/
+ * GPIO2=SCL, boards/esp32s3_devkitc_procpu.overlay) is read for
+ * temperature/pressure/humidity/gas resistance right before sending.
+ * [Guessing, unverified against real hardware -- no BME680 was
+ * connected during this project's other bring-up sessions]: the
+ * overlay assumes I2C address 0x76 (SDO grounded); see that file's
+ * comment and docs/VERIFICATION_NEEDED.md if your board wires SDO
+ * high instead. The sensor read degrading gracefully (payload falls
+ * back to boot_count-only, 4 bytes, if the read fails) is deliberate,
+ * not an oversight -- this sample's core LoRaWAN mission should not
+ * block on a sensor that may not physically be present.
  */
 
 #include <errno.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include <zephyr/kernel.h>
@@ -50,6 +63,7 @@
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/drivers/retained_mem.h>
+#include <zephyr/drivers/sensor.h>
 #include <zephyr/settings/settings.h>
 #include <zephyr/sys/poweroff.h>
 #include <esp_sleep.h>
@@ -80,21 +94,117 @@ static const struct lora_e5_otaa_config default_otaa_cfg = {
 
 /* Retained-memory boot/wake counter -- survives deep sleep (see
  * read_and_bump_boot_count()), does not gate any join/config decision
- * (docs/Device_State_Machine.md point 6), and doubles as this sample's
- * uplink payload (see build_uplink_payload()) so a real device event in
- * ChirpStack has an actual, verifiable value in it instead of a fixed
- * placeholder -- each successful uplink's payload should read one
- * higher than the last.
+ * (docs/Device_State_Machine.md point 6), and is always the first 4
+ * bytes of this sample's uplink payload (see build_uplink_payload())
+ * so a real device event in ChirpStack has an actual, verifiable value
+ * in it instead of a fixed placeholder -- each successful uplink's
+ * payload should read one higher than the last, sensor data or not.
  */
 #define RETAINED_MEM_MAGIC 0x4C453544u /* "LE5D" */
 
-/** @brief Encodes boot_count as a 4-byte big-endian uplink payload. */
-static void build_uplink_payload(uint32_t boot_count, uint8_t out[4])
+/* ------------------------------------------------------------------- */
+/* BME680 environmental sensor                                          */
+/* ------------------------------------------------------------------- */
+
+/** @brief Fixed-point environmental reading, ready to append to the
+ *  uplink payload. `valid` is false (all other fields zero) if the
+ *  sensor isn't present/ready or the read failed -- see
+ *  read_environment(). */
+struct env_reading {
+	bool valid;
+	int16_t temp_c_x100;    /* degrees C * 100, e.g. 2345 = 23.45C */
+	uint16_t press_kpa_x10; /* kPa * 10, e.g. 1013 = 101.3 kPa */
+	uint16_t humidity_x100; /* %RH * 100, e.g. 4567 = 45.67% */
+	uint32_t gas_res_ohm;   /* ohms, driver's native resolution */
+};
+
+/** @brief Converts a Zephyr struct sensor_value (val1 + val2/1e6) to a
+ *  fixed-point integer scaled by `scale`, e.g. scale=100 on 23.45
+ *  (val1=23, val2=450000) yields 2345. Integer-only (no float/double
+ *  pulled into the link) via an int64_t intermediate to avoid overflow
+ *  across the multiply. */
+static int32_t sensor_value_scaled(const struct sensor_value *v, int32_t scale)
+{
+	int64_t scaled = (int64_t)v->val1 * scale +
+			  ((int64_t)v->val2 * scale) / 1000000;
+
+	return (int32_t)scaled;
+}
+
+/** @brief Reads the BME680 (temp/press/humidity/gas resistance),
+ *  returning a zeroed, `valid=false` reading (not an error code) on
+ *  any failure -- see this file's doc comment for why a missing/failed
+ *  sensor degrades the uplink payload rather than blocking it. */
+static struct env_reading read_environment(void)
+{
+	struct env_reading env = { 0 };
+	const struct device *dev = DEVICE_DT_GET(DT_NODELABEL(bme680));
+	struct sensor_value temp, press, humidity, gas_res;
+
+	if (!device_is_ready(dev)) {
+		LOG_WRN("BME680 not ready -- uplink will omit sensor data");
+		return env;
+	}
+
+	if (sensor_sample_fetch(dev) != 0) {
+		LOG_WRN("BME680 sensor_sample_fetch failed -- uplink will omit sensor data");
+		return env;
+	}
+
+	if (sensor_channel_get(dev, SENSOR_CHAN_AMBIENT_TEMP, &temp) != 0 ||
+	    sensor_channel_get(dev, SENSOR_CHAN_PRESS, &press) != 0 ||
+	    sensor_channel_get(dev, SENSOR_CHAN_HUMIDITY, &humidity) != 0 ||
+	    sensor_channel_get(dev, SENSOR_CHAN_GAS_RES, &gas_res) != 0) {
+		LOG_WRN("BME680 sensor_channel_get failed -- uplink will omit sensor data");
+		return env;
+	}
+
+	env.valid = true;
+	env.temp_c_x100 = (int16_t)sensor_value_scaled(&temp, 100);
+	env.press_kpa_x10 = (uint16_t)sensor_value_scaled(&press, 10);
+	env.humidity_x100 = (uint16_t)sensor_value_scaled(&humidity, 100);
+	env.gas_res_ohm = (uint32_t)gas_res.val1;
+
+	LOG_INF("BME680: temp=%d.%02dC press=%d.%01dkPa humidity=%d.%02d%% gas_res=%uohm",
+		env.temp_c_x100 / 100, abs(env.temp_c_x100 % 100), env.press_kpa_x10 / 10,
+		env.press_kpa_x10 % 10, env.humidity_x100 / 100, env.humidity_x100 % 100,
+		(unsigned)env.gas_res_ohm);
+
+	return env;
+}
+
+/** @brief Builds the uplink payload into `out` (must be at least
+ *  UPLINK_PAYLOAD_MAX_LEN bytes) and returns the number of bytes
+ *  written: boot_count is always the first 4 bytes (big-endian); if
+ *  `env->valid`, 10 more bytes (temp/press/humidity/gas_res, all
+ *  big-endian) are appended, otherwise the payload is just the 4
+ *  bytes. */
+#define UPLINK_PAYLOAD_MAX_LEN 14
+
+static size_t build_uplink_payload(uint32_t boot_count, const struct env_reading *env,
+				    uint8_t out[UPLINK_PAYLOAD_MAX_LEN])
 {
 	out[0] = (uint8_t)(boot_count >> 24);
 	out[1] = (uint8_t)(boot_count >> 16);
 	out[2] = (uint8_t)(boot_count >> 8);
 	out[3] = (uint8_t)(boot_count);
+
+	if (!env->valid) {
+		return 4;
+	}
+
+	out[4] = (uint8_t)((uint16_t)env->temp_c_x100 >> 8);
+	out[5] = (uint8_t)((uint16_t)env->temp_c_x100);
+	out[6] = (uint8_t)(env->press_kpa_x10 >> 8);
+	out[7] = (uint8_t)(env->press_kpa_x10);
+	out[8] = (uint8_t)(env->humidity_x100 >> 8);
+	out[9] = (uint8_t)(env->humidity_x100);
+	out[10] = (uint8_t)(env->gas_res_ohm >> 24);
+	out[11] = (uint8_t)(env->gas_res_ohm >> 16);
+	out[12] = (uint8_t)(env->gas_res_ohm >> 8);
+	out[13] = (uint8_t)(env->gas_res_ohm);
+
+	return UPLINK_PAYLOAD_MAX_LEN;
 }
 
 static void event_cb(const struct lora_e5_app_event *event, void *user_data)
@@ -482,11 +592,11 @@ int main(void)
 		status_led_set_state(STATUS_LED_NETWORK_CONNECTED);
 	}
 
-	uint8_t uplink_payload[4];
+	struct env_reading env = read_environment();
+	uint8_t uplink_payload[UPLINK_PAYLOAD_MAX_LEN];
+	size_t payload_len = build_uplink_payload(boot_count, &env, uplink_payload);
 
-	build_uplink_payload(boot_count, uplink_payload);
-
-	rc = lora_e5_send_sync(uplink_payload, sizeof(uplink_payload), K_SECONDS(15));
+	rc = lora_e5_send_sync(uplink_payload, payload_len, K_SECONDS(15));
 	if (rc != 0) {
 		LOG_ERR("lora_e5_send_sync failed (%d)", rc);
 		if (led_ok) {
@@ -494,9 +604,10 @@ int main(void)
 			status_led_set_state(STATUS_LED_FATAL_ERROR);
 		}
 	} else {
-		LOG_INF("Send confirmed by the library (boot_count=%u) -- cross-check "
-			"ChirpStack's device event log to confirm the frame actually "
-			"arrived with this same value", boot_count);
+		LOG_INF("Send confirmed by the library (boot_count=%u, %u-byte payload, "
+			"sensor_data=%d) -- cross-check ChirpStack's device event log to "
+			"confirm the frame actually arrived with this same value",
+			boot_count, (unsigned)payload_len, (int)env.valid);
 	}
 
 sleep:

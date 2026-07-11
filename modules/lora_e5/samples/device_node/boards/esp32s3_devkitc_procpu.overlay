@@ -13,6 +13,8 @@
  * this specific base address/size is safe on this SoC.
  */
 
+#include <zephyr/dt-bindings/i2c/i2c.h>
+
 &uart2 {
 	status = "okay";
 	current-speed = <9600>;
@@ -58,4 +60,27 @@
 	 * deep_sleep sample).
 	 */
 	reg = <0x50000000 0x1f00>;
+};
+
+/*
+ * BME680 environmental sensor (temp/pressure/humidity/gas), I2C0 via the
+ * board's own default i2c0_default pinctrl (GPIO1=SDA, GPIO2=SCL,
+ * esp32s3_devkitc-pinctrl.dtsi -- not redefined here, already exists at
+ * the board level). [Guessing, not yet verified against real hardware
+ * -- no BME680 was connected during this project's other hardware
+ * bring-up sessions]: I2C address 0x76 assumes the sensor's SDO pin is
+ * tied low (grounded) -- the common default for breakout boards that
+ * don't break SDO out separately. If your board pulls SDO high instead,
+ * change reg below to 0x77. See docs/VERIFICATION_NEEDED.md.
+ */
+&i2c0 {
+	status = "okay";
+	clock-frequency = <I2C_BITRATE_STANDARD>;
+	pinctrl-0 = <&i2c0_default>;
+	pinctrl-names = "default";
+
+	bme680: bme680@76 {
+		compatible = "bosch,bme680";
+		reg = <0x76>;
+	};
 };
