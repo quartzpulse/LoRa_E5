@@ -1,0 +1,98 @@
+# ==============================================================================
+# Portable RGB Status LED Library (out-of-tree Zephyr module)
+# ==============================================================================
+
+menuconfig STATUS_LED
+	bool "Portable RGB status LED library"
+	default n
+	help
+	  Priority-based RGB status LED state machine. Applications call only
+	  status_led_init() / status_led_set_state() / status_led_clear_state() /
+	  status_led_get_state() and never touch GPIO/PWM/SPI directly.
+
+if STATUS_LED
+
+choice STATUS_LED_BACKEND
+	prompt "LED hardware backend"
+	default STATUS_LED_BACKEND_WS2812
+	help
+	  Selects which hardware abstraction layer renders the resolved
+	  (color, brightness) frame onto physical LED hardware.
+
+config STATUS_LED_BACKEND_WS2812
+	bool "WS2812 addressable RGB LED (SPI)"
+	select SPI
+	select LED_STRIP
+	select LED_STRIP_WS2812_SPI
+	help
+	  Single WS2812/compatible addressable RGB LED driven over SPI via
+	  Zephyr's led_strip API. Resolved from the "led-strip" devicetree
+	  alias. Brightness is applied by scaling RGB values in software.
+
+config STATUS_LED_BACKEND_GPIO
+	bool "3x discrete GPIO (R/G/B)"
+	select GPIO
+	help
+	  Three GPIO-driven LED legs (on/off only, no dimming). Resolved from
+	  "red-led" / "green-led" / "blue-led" devicetree aliases.
+
+config STATUS_LED_BACKEND_PWM
+	bool "3x PWM channel (R/G/B)"
+	select PWM
+	help
+	  Three PWM-driven LED channels with true brightness control via duty
+	  cycle. Resolved from "pwm-red-led" / "pwm-green-led" / "pwm-blue-led"
+	  devicetree aliases.
+
+config STATUS_LED_BACKEND_MONO_GPIO
+	bool "Monochrome LED via single GPIO"
+	select GPIO
+	help
+	  A single GPIO-driven LED (on/off only, no dimming) for boards with no
+	  RGB hardware. Each pattern's color is collapsed to one intensity via
+	  max(r, g, b) before thresholding. Resolved from the "mono-led"
+	  devicetree alias. Distinct states that only differ by color (not by
+	  blink pattern) will look identical on monochrome hardware.
+
+config STATUS_LED_BACKEND_MONO_PWM
+	bool "Monochrome LED via single PWM channel"
+	select PWM
+	help
+	  A single PWM-driven LED channel with true brightness control via duty
+	  cycle, for boards with no RGB hardware. Each pattern's color is
+	  collapsed to one intensity via max(r, g, b). Resolved from the
+	  "pwm-mono-led" devicetree alias.
+
+endchoice
+
+config STATUS_LED_DEFAULT_BRIGHTNESS
+	int "Default brightness (0-255)"
+	range 0 255
+	default 76
+	help
+	  Global brightness scale applied to every pattern's color, 0-255.
+	  Default of 76 is approximately 30%.
+
+config STATUS_LED_UPDATE_PERIOD_MS
+	int "Breathing/fade tick period (ms)"
+	range 5 1000
+	default 20
+	help
+	  Sampling period for the breathing (fade) pattern's brightness ramp.
+	  Patterns other than breathing are event-scheduled and do not use
+	  this tick.
+
+config STATUS_LED_PRIORITY_ENGINE
+	bool "Enable priority engine"
+	default y
+	help
+	  When enabled (default), multiple simultaneously active states are
+	  resolved to the single highest-priority state per the fixed
+	  priority table. Disabling this is not currently supported and is
+	  reserved for future use.
+
+module = STATUS_LED
+module-str = status_led
+source "subsys/logging/Kconfig.template.log_config"
+
+endif # STATUS_LED

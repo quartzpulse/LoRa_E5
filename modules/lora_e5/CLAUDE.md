@@ -145,7 +145,14 @@ see `scripts/README.md`'s "In this project" section) instead of
 compile-time constants, confirmed on real hardware across a fresh-flash
 boot and a real deep-sleep wake -- two real Kconfig/NVS pitfalls hit and
 fixed along the way, documented in `prj.conf` and
-`docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-12" section.
+`docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-12" section. Boot/wake
+status is also shown on the onboard WS2812 RGB LED
+(`modules/status_led`, GPIO38/SPI3, `boards/status_led_rgb.overlay`),
+confirmed on real hardware (green blink through connect, dark before
+sleep) -- see `src/main.c`'s file doc comment and
+`docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-12" section for why
+`status_led_stop()` (synchronous) is used instead of
+`status_led_set_state(STATUS_LED_SLEEP)` before power-off.
 
 `lora_e5_resume()`/`lora_e5_resume_sync()` (public API, `lora_e5.h`) is
 a real, shipped alternative to `lora_e5_start()`+`lora_e5_join()`: a new

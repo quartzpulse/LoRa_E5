@@ -606,3 +606,41 @@ should never hit this path.
   registers `lora_e5_device_node`). Changed the generator to have each
   settings module `LOG_MODULE_REGISTER()` its own log module instead of
   assuming a shared one exists.
+
+---
+
+## Resolved 2026-07-12 (real hardware: esp32s3_devkitc, `samples/device_node`'s WS2812 status LED)
+
+- ~~GPIO38 is the right pin for this board's onboard WS2812~~ --
+  **[Certain, confirmed by the project owner]**. `modules/status_led`'s
+  `boards/status_led_rgb.overlay` was originally written for a Waveshare
+  ESP32-S3 DevKit per that module's own README, not necessarily this
+  project's plain `esp32s3_devkitc` -- worth flagging before use since
+  wrong wiring here fails silently (LED just stays dark, no build/boot
+  error) rather than loudly. Confirmed correct on real hardware: visible
+  green blink pattern during the wake cycle, LED going dark before sleep.
+- ~~A WS2812 needs `status_led_set_state(STATUS_LED_SLEEP)` (or nothing
+  at all) before `sys_poweroff()`, same as any other state
+  transition~~ -- **not used, for a real reason**, not just an oversight.
+  A WS2812 latches its last-written color indefinitely on pure power (no
+  periodic refresh needed to hold it), and GPIO38/SPI3's output gets
+  isolated (not actively driven) during ESP32 deep sleep -- so if the
+  LED chip itself stays powered through deep sleep (likely, same 3.3V
+  rail), skipping an explicit, *synchronous* off before power-down would
+  leave it lit at whatever color for the entire sleep interval,
+  quietly burning current the whole 60s wake period is supposed to
+  avoid. `status_led_set_state()` defers the actual hardware write to
+  an async work item -- calling it immediately before `sys_poweroff()`
+  risks losing the write to the same race `LOG_PANIC()` was added for
+  earlier in this file's "Resolved 2026-07-11" section. Used
+  `status_led_stop()` instead (documented as synchronous, writes OFF
+  before returning) -- confirmed on real hardware: LED visibly goes
+  dark before each power-off, not left lit through sleep.
+- Both confirmed together across a full real wake cycle: boot ->
+  `STATUS_LED_BOOTING` (white, too brief to see one full blink cycle at
+  this sample's timing) -> `STATUS_LED_CONNECTING_NETWORK` (green, fast
+  blink) -> `STATUS_LED_NETWORK_CONNECTED` (green, single pulse) ->
+  `status_led_stop()` (dark) -> deep sleep. `modules/status_led`'s own
+  MQTT/OTA/provisioning states are deliberately not used --
+  `samples/device_node` has none of those concepts -- see that
+  decision recorded in `src/main.c`'s file doc comment.

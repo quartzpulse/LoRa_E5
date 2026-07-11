@@ -27,6 +27,19 @@
  * adr_enabled/data_rate/tx_power/confirmed_uplink/uplink_interval_sec
  * are commented out in the YAML because lora_e5.h has no public setter
  * for any of them yet (CLAUDE.md's "Known gaps" #2).
+ *
+ * Status is shown on the onboard WS2812 RGB LED (modules/status_led,
+ * GPIO38/SPI3, boards/status_led_rgb.overlay) using a minimal, honest
+ * subset of that library's network/MQTT-flavored state vocabulary --
+ * device_node has no MQTT/OTA/provisioning, so only BOOTING /
+ * CONNECTING_NETWORK / NETWORK_CONNECTED / HW_FAILURE / FATAL_ERROR are
+ * used, not the full table. IMPORTANT: status_led_stop() (synchronous)
+ * is called right before sys_poweroff(), not status_led_set_state() --
+ * a WS2812 latches its last color on pure power and needs no refresh,
+ * and GPIO38/SPI3 gets isolated (not actively driven low) during ESP32
+ * deep sleep, so skipping the synchronous off would leave the LED lit
+ * at whatever color for the entire sleep interval, silently defeating
+ * the point of a duty-cycled battery node.
  */
 
 #include <errno.h>
@@ -42,6 +55,7 @@
 #include <esp_sleep.h>
 
 #include <lora_e5/lora_e5.h>
+#include <status_led/status_led.h>
 
 #include "settings_lorawan.h"
 
@@ -64,12 +78,24 @@ static const struct lora_e5_otaa_config default_otaa_cfg = {
 };
 #define DEFAULT_REGION_NAME "IN865"
 
-static const uint8_t test_payload[] = { 0xDE, 0xAD, 0xBE, 0xEF };
-
-/* Retained-memory boot/wake counter -- diagnostic only, does not gate any
- * join/config decision. See docs/Device_State_Machine.md point 6.
+/* Retained-memory boot/wake counter -- survives deep sleep (see
+ * read_and_bump_boot_count()), does not gate any join/config decision
+ * (docs/Device_State_Machine.md point 6), and doubles as this sample's
+ * uplink payload (see build_uplink_payload()) so a real device event in
+ * ChirpStack has an actual, verifiable value in it instead of a fixed
+ * placeholder -- each successful uplink's payload should read one
+ * higher than the last.
  */
 #define RETAINED_MEM_MAGIC 0x4C453544u /* "LE5D" */
+
+/** @brief Encodes boot_count as a 4-byte big-endian uplink payload. */
+static void build_uplink_payload(uint32_t boot_count, uint8_t out[4])
+{
+	out[0] = (uint8_t)(boot_count >> 24);
+	out[1] = (uint8_t)(boot_count >> 16);
+	out[2] = (uint8_t)(boot_count >> 8);
+	out[3] = (uint8_t)(boot_count);
+}
 
 static void event_cb(const struct lora_e5_app_event *event, void *user_data)
 {
@@ -343,6 +369,20 @@ int main(void)
 
 	LOG_INF("Wake cause=%d boot_count=%u", (int)cause, boot_count);
 
+	/* LED failure is not fatal to the LoRaWAN mission -- if it doesn't
+	 * come up, log it once and skip every other status_led_*() call
+	 * this boot rather than risk cascading a display-only failure into
+	 * treating the whole wake as failed.
+	 */
+	bool led_ok = (status_led_init() == 0);
+
+	if (!led_ok) {
+		LOG_WRN("status_led_init failed -- continuing without LED status");
+	}
+	if (led_ok) {
+		status_led_set_state(STATUS_LED_BOOTING);
+	}
+
 	struct lora_e5_otaa_config loaded_otaa;
 	enum lora_e5_region loaded_region;
 	int rc;
@@ -350,6 +390,10 @@ int main(void)
 	rc = load_provisioning(&loaded_otaa, &loaded_region);
 	if (rc != 0) {
 		LOG_ERR("load_provisioning failed (%d)", rc);
+		if (led_ok) {
+			status_led_clear_state(STATUS_LED_BOOTING);
+			status_led_set_state(STATUS_LED_FATAL_ERROR);
+		}
 		goto sleep;
 	}
 
@@ -361,6 +405,10 @@ int main(void)
 	rc = lora_e5_init(&hw);
 	if (rc != 0) {
 		LOG_ERR("lora_e5_init failed (%d)", rc);
+		if (led_ok) {
+			status_led_clear_state(STATUS_LED_BOOTING);
+			status_led_set_state(STATUS_LED_HW_FAILURE);
+		}
 		goto sleep;
 	}
 
@@ -369,13 +417,26 @@ int main(void)
 	rc = lora_e5_set_otaa(&loaded_otaa);
 	if (rc != 0) {
 		LOG_ERR("lora_e5_set_otaa failed (%d)", rc);
+		if (led_ok) {
+			status_led_clear_state(STATUS_LED_BOOTING);
+			status_led_set_state(STATUS_LED_FATAL_ERROR);
+		}
 		goto sleep;
 	}
 
 	rc = lora_e5_set_region(loaded_region);
 	if (rc != 0) {
 		LOG_ERR("lora_e5_set_region failed (%d)", rc);
+		if (led_ok) {
+			status_led_clear_state(STATUS_LED_BOOTING);
+			status_led_set_state(STATUS_LED_FATAL_ERROR);
+		}
 		goto sleep;
+	}
+
+	if (led_ok) {
+		status_led_clear_state(STATUS_LED_BOOTING);
+		status_led_set_state(STATUS_LED_CONNECTING_NETWORK);
 	}
 
 	/* lora_e5_resume_sync(), not start_sync()+join_sync(): this board's
@@ -392,6 +453,10 @@ int main(void)
 	rc = lora_e5_resume_sync(K_SECONDS(20));
 	if (rc != 0) {
 		LOG_ERR("lora_e5_resume_sync failed (%d)", rc);
+		if (led_ok) {
+			status_led_clear_state(STATUS_LED_CONNECTING_NETWORK);
+			status_led_set_state(STATUS_LED_FATAL_ERROR);
+		}
 		goto sleep;
 	}
 
@@ -404,19 +469,45 @@ int main(void)
 		rc = lora_e5_join_sync(K_SECONDS(20));
 		if (rc != 0) {
 			LOG_ERR("lora_e5_join_sync failed (%d)", rc);
+			if (led_ok) {
+				status_led_clear_state(STATUS_LED_CONNECTING_NETWORK);
+				status_led_set_state(STATUS_LED_FATAL_ERROR);
+			}
 			goto sleep;
 		}
 	}
 
-	rc = lora_e5_send_sync(test_payload, sizeof(test_payload), K_SECONDS(15));
+	if (led_ok) {
+		status_led_clear_state(STATUS_LED_CONNECTING_NETWORK);
+		status_led_set_state(STATUS_LED_NETWORK_CONNECTED);
+	}
+
+	uint8_t uplink_payload[4];
+
+	build_uplink_payload(boot_count, uplink_payload);
+
+	rc = lora_e5_send_sync(uplink_payload, sizeof(uplink_payload), K_SECONDS(15));
 	if (rc != 0) {
 		LOG_ERR("lora_e5_send_sync failed (%d)", rc);
+		if (led_ok) {
+			status_led_clear_state(STATUS_LED_NETWORK_CONNECTED);
+			status_led_set_state(STATUS_LED_FATAL_ERROR);
+		}
 	} else {
-		LOG_INF("Send confirmed by the library -- cross-check ChirpStack's "
-			"device event log to confirm the frame actually arrived");
+		LOG_INF("Send confirmed by the library (boot_count=%u) -- cross-check "
+			"ChirpStack's device event log to confirm the frame actually "
+			"arrived with this same value", boot_count);
 	}
 
 sleep:
+	/* Synchronous, not status_led_set_state(STATUS_LED_SLEEP) -- see
+	 * this file's doc comment for why the async form would risk
+	 * leaving the LED lit through the whole sleep interval.
+	 */
+	if (led_ok) {
+		status_led_stop();
+	}
+
 	/* Always sleep and retry next cycle rather than idling awake on
 	 * failure -- a duty-cycled battery node should never sit at the idle
 	 * thread burning power waiting for nothing.

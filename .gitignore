@@ -5,6 +5,7 @@ external
 .vscode/extensions.json
 /modules/*
 !/modules/lora_e5/
+!/modules/status_led/
 
 # Python
 /.venv/

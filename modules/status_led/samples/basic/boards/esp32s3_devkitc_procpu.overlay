@@ -1,0 +1,51 @@
+/*
+ * Reference WS2812 wiring for the ESP32-S3-DevKitC, driven over SPI3 using
+ * only its MOSI line as the single-wire data line (see status_led README
+ * for the DeviceTree contract of the other backends).
+ */
+
+#include <zephyr/dt-bindings/led/led.h>
+#include <zephyr/dt-bindings/led/worldsemi_ws2812c.h>
+
+/ {
+	aliases {
+		led-strip = &status_rgb_led;
+	};
+};
+
+&pinctrl {
+	spim3_status_led: spim3_status_led {
+		group1 {
+			/* GPIO38 = gpio1 pin 6: the onboard WS2812 RGB LED data line. */
+			pinmux = <SPIM3_MOSI_GPIO38>;
+			output-low;
+		};
+	};
+};
+
+&spi3 {
+	#address-cells = <1>;
+	#size-cells = <0>;
+	status = "okay";
+	line-idle-low;
+	pinctrl-0 = <&spim3_status_led>;
+	pinctrl-names = "default";
+
+	status_rgb_led: ws2812@0 {
+		compatible = "worldsemi,ws2812-spi";
+		reg = <0>;
+		spi-max-frequency = <WS2812C_SPI_FREQ>;
+
+		chain-length = <1>;
+		/*
+		 * RGB wire order (not the more common GRB) -- verified against
+		 * observed hardware: GRB order rendered cyan as magenta (R/G
+		 * swapped) on this board's WS2812.
+		 */
+		color-mapping = <LED_COLOR_ID_RED>,
+				<LED_COLOR_ID_GREEN>,
+				<LED_COLOR_ID_BLUE>;
+		spi-one-frame = <WS2812C_ONE_FRAME>;
+		spi-zero-frame = <WS2812C_ZERO_FRAME>;
+	};
+};

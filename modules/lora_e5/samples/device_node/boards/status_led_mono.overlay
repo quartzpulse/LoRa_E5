@@ -1,0 +1,24 @@
+/*
+ * Monochrome status LED wiring (LTE build): the onboard LED at GPIO38
+ * driven as a plain on/off GPIO via CONFIG_STATUS_LED_BACKEND_MONO_GPIO.
+ *
+ * Same physical pad as boards/status_led_rgb.overlay's WS2812 wiring --
+ * these two overlays are mutually exclusive per build variant, never
+ * combined in the same DTC_OVERLAY_FILE list.
+ */
+
+/ {
+	aliases {
+		mono-led = &status_mono_led;
+	};
+
+	status_led_mono {
+		compatible = "gpio-leds";
+
+		status_mono_led: led_0 {
+			/* GPIO 38 = gpio1 pin 6 (38 - 32 = 6) */
+			gpios = <&gpio1 6 GPIO_ACTIVE_HIGH>;
+			label = "Status LED (mono)";
+		};
+	};
+};
