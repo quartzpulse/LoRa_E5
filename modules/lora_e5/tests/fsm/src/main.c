@@ -197,6 +197,30 @@ static const char *boot_then_pause_before_id_responder(const char *cmd, size_t l
 	return NULL;
 }
 
+/**
+ * Models "the modem's AT parser doesn't respond to a bare AT probe
+ * issued without a prior AT+RESET" -- fails bare "AT" until AT+RESET
+ * has actually been sent, then behaves exactly like
+ * happy_path_responder() for everything else (including a subsequent
+ * bare "AT", i.e. CHECK_AT's own probe after the reset succeeds).
+ * Used to test lora_e5_resume()'s fallback path: the fast-path probe
+ * genuinely fails, and the FSM must fall back to the ordinary full
+ * RESET+CONFIG sequence and land at READY (not silently stall).
+ */
+static bool g_reset_seen;
+
+static const char *resume_probe_fails_responder(const char *cmd, size_t len)
+{
+	if (strncmp(cmd, "AT+RESET", 8) == 0) {
+		g_reset_seen = true;
+		return "+RESET: OK";
+	}
+	if (strcmp(cmd, "AT") == 0 && !g_reset_seen) {
+		return NULL; /* no response -- probe times out */
+	}
+	return happy_path_responder(cmd, len);
+}
+
 /* ------------------------------------------------------------------- */
 /* Setup / teardown                                                     */
 /* ------------------------------------------------------------------- */
@@ -242,6 +266,7 @@ static void case_before(void *f)
 
 	mock_uart_reset();
 	g_join_reply = "+JOIN: Done";
+	g_reset_seen = false;
 	memset(app_event_log, 0, sizeof(app_event_log));
 	app_event_log_count = 0;
 
@@ -537,6 +562,60 @@ ZTEST(lora_e5_fsm, test_structural_error_not_retried_after_unrelated_uart_fault)
 		      "ERROR must stay ERROR -- a later transport fault must not reopen "
 		      "a structural failure for retry");
 	zassert_equal(mock_uart_send_count(), sends_before, NULL);
+}
+
+/* ------------------------------------------------------------------- */
+/* lora_e5_resume(): fast path reaches JOINED without ever sending      */
+/* AT+RESET -- confirmed real-hardware behavior, see                    */
+/* docs/VERIFICATION_NEEDED.md's "Resolved 2026-07-11" section          */
+/* ------------------------------------------------------------------- */
+
+ZTEST(lora_e5_fsm, test_resume_fast_path_skips_reset_and_config)
+{
+	mock_uart_set_auto_responder(happy_path_responder);
+	g_join_reply = "+JOIN: Joined already";
+
+	zassert_equal(lora_e5_resume_sync(K_MSEC(5000)), 0, NULL);
+	zassert_equal(lora_e5_get_state(), LORA_E5_STATE_JOINED, NULL);
+
+	/* The whole point: only "AT" then "AT+JOIN" were ever sent -- no
+	 * AT+RESET, no CONFIG sub-commands (AT+MODE/AT+ID/AT+KEY/...).
+	 */
+	zassert_equal(mock_uart_send_count(), 2, NULL);
+
+	sync_barrier();
+	zassert_true(count_app_events(LORA_E5_APP_EVT_JOIN_SUCCESS) >= 1, NULL);
+}
+
+/* ------------------------------------------------------------------- */
+/* lora_e5_resume(): fast-path probe failure falls back to the ordinary */
+/* full RESET+CONFIG sequence and lands at READY (not silently stuck)   */
+/* ------------------------------------------------------------------- */
+
+ZTEST(lora_e5_fsm, test_resume_fallback_to_full_start_when_probe_fails)
+{
+	mock_uart_set_auto_responder(resume_probe_fails_responder);
+
+	/* resume_probe_fails_responder() never answers the fast path's
+	 * bare "AT" -- lora_e5_mm_probe() exhausts its own bounded retries
+	 * and reports failure, which handle_probe_result()'s RESUMING
+	 * branch routes to recovery_step_failed() (same fallback machinery
+	 * every other fault uses) rather than straight to ERROR. That
+	 * falls all the way through AT+RESET -> CHECK_AT -> full CONFIG,
+	 * landing at READY -- not JOINED, since recovery_was_joined is
+	 * false for a fault that occurred before any prior JOINED state
+	 * (CLAUDE.md decision #2: no auto-join after CONFIG on the
+	 * fallback path either).
+	 */
+	zassert_equal(lora_e5_resume_sync(K_SECONDS(30)), 0, NULL);
+	zassert_equal(lora_e5_get_state(), LORA_E5_STATE_READY, NULL);
+	zassert_true(g_reset_seen, "fallback must have actually sent AT+RESET");
+
+	/* Finish the job exactly as an application would after resume_sync()
+	 * lands at READY instead of JOINED.
+	 */
+	zassert_equal(lora_e5_join_sync(K_MSEC(5000)), 0, NULL);
+	zassert_equal(lora_e5_get_state(), LORA_E5_STATE_JOINED, NULL);
 }
 
 ZTEST_SUITE(lora_e5_fsm, NULL, suite_setup, case_before, NULL, NULL);

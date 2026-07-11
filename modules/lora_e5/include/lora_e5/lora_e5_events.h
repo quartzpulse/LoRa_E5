@@ -35,8 +35,16 @@ extern "C" {
  */
 enum lora_e5_fsm_event_type {
 	LORA_E5_FSM_EVT_START_REQUEST,
+	LORA_E5_FSM_EVT_RESUME_REQUEST,     /**< lora_e5_resume()/
+	                                      *   resume_sync() only -- see
+	                                      *   LORA_E5_STATE_RESUMING. */
 	LORA_E5_FSM_EVT_BOOT_SETTLE_EXPIRED,
-	LORA_E5_FSM_EVT_PROBE_RESULT,       /**< CHECK_AT step result. */
+	LORA_E5_FSM_EVT_PROBE_RESULT,       /**< CHECK_AT or RESUMING step
+	                                      *   result -- same event,
+	                                      *   dispatched differently by
+	                                      *   handle_probe_result()
+	                                      *   depending on which state
+	                                      *   is active. */
 	LORA_E5_FSM_EVT_CONFIG_STEP_RESULT, /**< One CONFIG sub-command
 	                                      *   resolved; FSM advances to
 	                                      *   next sub-command or to

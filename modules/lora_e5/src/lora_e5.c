@@ -194,6 +194,12 @@ static int trigger_start(void *arg)
 	return lora_e5_start();
 }
 
+static int trigger_resume(void *arg)
+{
+	ARG_UNUSED(arg);
+	return lora_e5_resume();
+}
+
 static int trigger_join(void *arg)
 {
 	ARG_UNUSED(arg);
@@ -321,6 +327,41 @@ int lora_e5_start_sync(k_timeout_t timeout)
 {
 	struct lora_e5_app_event result;
 	int rc = sync_wait(match_ready_or_error, trigger_start, NULL, timeout, &result);
+
+	if (rc != 0) {
+		return rc;
+	}
+	if (result.type == LORA_E5_APP_EVT_ERROR) {
+		return result.error_errno;
+	}
+	return 0;
+}
+
+int lora_e5_resume(void)
+{
+	if (!g_activation_set || !g_region_set) {
+		return -EINVAL;
+	}
+
+	int rc = lora_e5_fsm_stage_config(&g_pending_cfg);
+
+	if (rc != 0) {
+		return rc;
+	}
+
+	struct lora_e5_fsm_event evt = { .type = LORA_E5_FSM_EVT_RESUME_REQUEST };
+
+	return lora_e5_fsm_post_event(&evt);
+}
+
+int lora_e5_resume_sync(k_timeout_t timeout)
+{
+	struct lora_e5_app_event result;
+	/* match_reset_done matches READY-or-JOINED-or-ERROR -- exactly
+	 * this call's three possible terminal states (see lora_e5.h's doc
+	 * comment: fast path lands at JOINED, fallback lands at READY).
+	 */
+	int rc = sync_wait(match_reset_done, trigger_resume, NULL, timeout, &result);
 
 	if (rc != 0) {
 		return rc;

@@ -117,47 +117,43 @@ Decisions made when turning this diagram into `samples/device_node/`
      `esp_sleep_enable_timer_wakeup(usec)` followed by `sys_poweroff()`,
      puts the SoC into deep sleep with a timer wakeup source. Wake cause
      is read back via `esp_sleep_get_wakeup_causes()`.
-6. **Retained memory does NOT let a wake skip the join call.**
-   `lora_e5_start_sync()` unconditionally issues `AT+RESET` then
-   `CONFIG` (`lora_e5_fsm.c`'s `handle_start_request()`/
-   `handle_probe_result()`) -- there is no "resume without reset" entry
-   point in the public API today. So every wake redoes the full
-   init/config/join sequence regardless of whether the LoRa-E5 module
-   itself kept its session across the MCU's sleep. The retained struct in
-   `samples/device_node` is used for a wake/boot counter (diagnostic),
-   not to skip work -- claiming otherwise would be an unverified
-   optimization the project's `VERIFICATION_NEEDED.md` convention
-   explicitly warns against.
-7. **Resolved (was "open/unverified"): the module's VCC is on an
-   always-on rail** -- confirmed by the project owner. This raised the
-   natural follow-up -- "so can boot skip the reset/join if the module
-   never lost its session?" -- which was investigated but not yet
-   answered yes: an attempted "check join status first" query turned
-   out to be built on a misread of the AT spec (`AT+LW=NET` is the
-   public-vs-private network sync word, not a join indicator -- see
+6. **Resolved: a wake CAN skip the reset+join call, via
+   `lora_e5_resume_sync()`.** Originally this section said
+   `lora_e5_start_sync()` always resets and there was no alternative --
+   still true of `start_sync()` itself, but no longer the whole story.
+   Investigating the natural follow-up to point 7 below ("so can boot
+   skip reset/join if the module never lost its session?") led through
+   a wrong turn (a "check join status first" query built on a misread
+   of the AT spec -- `AT+LW=NET` is the public/private network sync
+   word, not a join indicator; corrected and renamed to
+   `lora_e5_get_public_network_mode()`) to the real mechanism: `AT+JOIN`
+   itself returns `"+JOIN: Joined already"` (spec §4.5.2) when a session
+   survived, and it's specifically `AT+RESET` that invalidates that
+   session -- confirmed by isolating it from `CONFIG`'s `AT+MODE`
+   reissue (no effect) and then from `AT+RESET` entirely (57ms
+   `"Joined already"` response, direct send succeeded right after).
+   Shipped as `lora_e5_resume()`/`lora_e5_resume_sync()` (`lora_e5.h`):
+   a new `LORA_E5_STATE_RESUMING` FSM state that probes without
+   `AT+RESET`, tries `AT+JOIN` directly on success (skipping `CONFIG`
+   entirely), and falls back to the ordinary full sequence via the
+   *existing, unmodified* recovery-ladder machinery on any failure --
+   safe to call unconditionally instead of `start_sync()`. See
    `docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-11" section for
-   the correction) and got renamed to
-   `lora_e5_get_public_network_mode()` accordingly. The spec's actual
-   documented "already joined" signal is `AT+JOIN`'s own `"+JOIN:
-   Joined already"` response (§4.5.2), already modeled in this codebase
-   (`LORA_E5_MM_TAG_JOIN_ALREADY`) -- but a real-hardware timing test
-   showed a post-`start_sync()` `lora_e5_join_sync()` still takes the
-   full ~8s handshake, not that fast path. First candidate explanation
-   (`CONFIG`'s unconditional `AT+MODE=LWOTAA` reissue every boot,
-   spec §4.23) was tested directly on real hardware by temporarily
-   skipping it -- **refuted**, join still took 8033ms with a new
-   DevAddr. Current leading candidate: `AT+RESET` itself clearing
-   volatile OTAA session state, which every test so far has had no way
-   to isolate from (`lora_e5_start_sync()` is the only public path to
-   `READY` and always resets first). See
-   `docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-11" section, item
-   5, for the full reasoning. So point 6 above still stands as-is: there
-   is currently no verified way to skip `lora_e5_start_sync()`'s
-   reset+config or `lora_e5_join_sync()`'s join, even though the
-   underlying session survives both an MCU reboot and our own
-   `AT+RESET`+`CONFIG`. See `docs/VERIFICATION_NEEDED.md`'s
-   "Resolved 2026-07-11" section for the full investigation and the
-   concrete next experiment if this is revisited.
+   the full investigation and the exact numbers.
+7. **Resolved: the module's VCC is on an always-on rail** -- confirmed
+   by the project owner, which is what made point 6 above worth
+   pursuing in the first place.
+
+`samples/device_node` now uses `lora_e5_resume_sync()` in place of
+`start_sync()`+`join_sync()`. Confirmed on real hardware across three
+consecutive real deep-sleep/wake cycles: **every one** hit the fast
+path (`STATE_CHANGED` sequence `RESUMING -> JOINING -> JOINED`,
+skipping `RESET`/`BOOT`/`CHECK_AT`/`CONFIG`/`READY` entirely),
+`JOIN_SUCCESS` arriving ~58ms after boot each time -- total
+wake-to-sleep time dropped from ~15.7s to ~1.5-3.4s per cycle. The
+retained-memory struct is still used only for the wake/boot counter
+(diagnostic), not for deciding whether to skip work -- the FSM's own
+probe-then-join fast path is what decides that, live, every wake.
 
 See `samples/device_node/` for the implementation.
 

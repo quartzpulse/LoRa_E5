@@ -135,7 +135,28 @@ just a build). `samples/join/build.sh` wraps the
 "Architecture" and "Confirmed against real hardware" sections) is also
 implemented and confirmed on real hardware: three consecutive real
 deep-sleep/wake/rejoin/send cycles observed over serial, retained-memory
-boot counter surviving power-off correctly.
+boot counter surviving power-off correctly. It now uses
+`lora_e5_resume_sync()` (see below) instead of
+`start_sync()`+`join_sync()` -- confirmed on real hardware that every
+one of three wake cycles hit the fast path, dropping wake-to-sleep time
+from ~15.7s to ~1.5-3.4s per cycle.
+
+`lora_e5_resume()`/`lora_e5_resume_sync()` (public API, `lora_e5.h`) is
+a real, shipped alternative to `lora_e5_start()`+`lora_e5_join()`: a new
+`LORA_E5_STATE_RESUMING` FSM state probes without `AT+RESET` and, on
+success, attempts `AT+JOIN` directly (skipping `CONFIG` entirely,
+reaching `JOINED` in tens of milliseconds when the module never lost
+power). Any failure -- probe fails, fast-path join fails -- falls back
+to the ordinary full `RESET`+`CONFIG`+`JOIN` sequence via the
+**existing, unmodified** `recovery_step_failed()`/recovery-ladder
+machinery; no new fallback logic, no changes to `CONFIG` sequencing or
+`lora_e5_start_sync()`, and CLAUDE.md decision #2 ("v1 does NOT
+auto-join after CONFIG") holds exactly as before everywhere except this
+one explicitly-opted-into call. Two new `tests/fsm` cases
+(`test_resume_fast_path_skips_reset_and_config`,
+`test_resume_fallback_to_full_start_when_probe_fails`) cover both
+paths. See `docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-11"
+section for the full investigation that led here.
 
 `lora_e5_get_public_network_mode()` (public API, `AT+LW=NET`) queries
 the modem's public-vs-private LoRaWAN sync word setting (spec §4.28.4)
@@ -143,13 +164,8 @@ the modem's public-vs-private LoRaWAN sync word setting (spec §4.28.4)
 initially shipped mislabeled as `get_join_status()`, on the wrong
 assumption that "NET" meant join state; caught and corrected by
 checking the primary AT spec PDF -- see `docs/VERIFICATION_NEEDED.md`'s
-"Resolved 2026-07-11" section for the full story, including where the
-real "already joined" signal actually lives (`AT+JOIN`'s own `"+JOIN:
-Joined already"` response, spec §4.5.2 --
-`LORA_E5_MM_TAG_JOIN_ALREADY` in `lora_e5_hf_commands.c`, already
-implemented but not currently reachable through
-`lora_e5_start_sync()`'s CONFIG sequence -- see that section for why).
-Implementing this query added a `captured_text` field to `struct
+"Resolved 2026-07-11" section for the full story. Implementing this
+query added a `captured_text` field to `struct
 lora_e5_at_result` (`lora_e5_at.h`) so a matched terminal line's text
 can finally reach a caller -- this also unblocks (not yet done)
 properly implementing `lora_e5_mm_get_version()`/`get_max_payload()`,

@@ -472,27 +472,60 @@ should never hit this path.
      Skipping the `AT+MODE` reissue made no measurable difference.
      Change fully reverted (`git checkout`) immediately after the
      measurement -- nothing from this experiment shipped.
-  5. **Leading candidate now**: `AT+RESET` itself, not `CONFIG`. Every
-     test so far that reached a real join always had a `start_sync()`
-     (`AT+RESET` then `CONFIG`) in between the last known-joined state
-     and the join attempt -- `AT+RESET` clearing volatile OTAA session
-     state (negotiated DevAddr/session keys/frame counters) while
-     `AT+ID`/`AT+KEY`-provisioned credentials persist in flash is
-     completely ordinary behavior for a LoRaWAN AT modem, and would
-     mean `"+JOIN: Joined already"` is only reachable by calling
-     `AT+JOIN` twice within the *same* power-up with no intervening
-     `AT+RESET` at all (e.g. an application bug retrying a join call) --
-     not something reachable across an MCU reboot/deep-sleep cycle that
-     always resets the modem via `lora_e5_start_sync()`. **Not yet
-     directly tested** (would need a call sequence that reaches `READY`
-     without ever invoking `AT+RESET` -- not possible through the
-     current public API, since `lora_e5_start_sync()` is the only path
-     to `READY` and it always resets first). If this is revisited: the
-     real question is no longer "how do we skip reset+join," it's
-     "given a real AT+RESET must be sent every boot for this MCU to
-     even talk to a possibly-desynced modem, is a fresh OTAA join on
-     every wake simply the expected, unavoidable cost" -- worth
-     confirming directly with Seeed/the spec rather than assuming.
+  5. **`AT+RESET` confirmed as the cause [Certain, real hardware,
+     2026-07-11]**. Isolated test: a throwaway diagnostic that calls
+     `lora_e5_mm_join()` directly (bypassing the FSM/public API
+     entirely, via an extra include path into the module's internal
+     `src/` headers) as the **literal first AT command issued this
+     power cycle** -- no `AT+RESET`, no `CONFIG`, nothing else sent
+     first, module continuously powered from a prior successful join in
+     an earlier test. Result: `JOIN_RESULT` arrived in **57 ms** (not
+     ~8000 ms) with `dev_addr` all-zero (no DevAddr in the response,
+     matching the spec's `"+JOIN: Joined already"` example, which has
+     no NetID/DevAddr line) -- the fast path. A direct `lora_e5_mm_send()`
+     issued immediately after (also bypassing the FSM) succeeded too
+     (`fail_reason=NONE`, ~1.3 s including the automatic `AT+PORT=`
+     reissue since no CONFIG had run this cycle). Combined with item 4
+     above (full `CONFIG` minus `AT+MODE`, but *with* `AT+RESET`, still
+     took the full ~8 s handshake): **`AT+RESET` is specifically what
+     invalidates the join session** -- not `AT+MODE`, not the
+     `AT+ID`/`AT+KEY` reissues. This directly confirms the original
+     question ("can we skip reset and push a message directly if
+     already joined") -- **yes**, provided `AT+RESET` is skipped.
+  6. **Shipped as a real public API [Certain, real hardware,
+     2026-07-11]**: `lora_e5_resume()`/`lora_e5_resume_sync()`
+     (`lora_e5.h`) -- a new `LORA_E5_STATE_RESUMING` FSM state that
+     probes without `AT+RESET`, attempts `AT+JOIN` directly on success
+     (skipping `CONFIG` entirely), and falls back to the ordinary full
+     `RESET`+`CONFIG`+`JOIN` sequence via the *existing, unmodified*
+     `recovery_step_failed()`/recovery-ladder machinery if the probe or
+     the fast join attempt fails for any reason -- no new fallback
+     logic needed, no changes to `CONFIG` sequencing, no change to
+     `lora_e5_start_sync()`'s behavior, and CLAUDE.md decision #2 ("v1
+     does NOT auto-join after CONFIG") holds exactly as before on every
+     path except this one explicitly-opted-into call. Two new
+     `tests/fsm` cases cover both the fast path and the fallback path.
+     Wired into `samples/device_node` in place of
+     `start_sync()`+`join_sync()`; confirmed on real hardware across
+     three consecutive real deep-sleep/wake cycles, **every single one**
+     hit the fast path (`STATE_CHANGED` sequence `RESUMING -> JOINING
+     -> JOINED`, skipping `RESET`/`BOOT`/`CHECK_AT`/`CONFIG`/`READY`
+     entirely), `JOIN_SUCCESS` arriving ~58ms after boot each time --
+     total wake-to-sleep time dropped from ~15.7s to ~1.5-3.4s per
+     cycle. One cosmetic side effect observed and not fixed: the
+     `JOIN_SUCCESS` event's `dev_addr` reads all-zero on the fast path
+     (the modem's `"+JOIN: Joined already"` response has no DevAddr
+     line to report, per item 5 above) -- functionally harmless (the
+     modem itself still knows its real DevAddr for the actual send),
+     but an application logging/displaying `dev_addr` from this event
+     will see zeros on fast-path wakes. Still open, not yet tested:
+     whether ESP32 boot-time UART line noise (mentioned throughout this
+     file's Async-API investigation) could desync the modem's AT parser
+     in a way only a real `AT+RESET` recovers from -- if so, the
+     fallback path (already implemented and tested to work when the
+     probe fails) is exactly what handles it, so this is a "does the
+     safety net get exercised in practice" question, not a gap in the
+     implementation.
   Implemented as part of this investigation, independent of the
   answer above and reusable regardless: `struct lora_e5_at_result`
   (`lora_e5_at.h`) gained a `captured_text`/`captured_text_len` field

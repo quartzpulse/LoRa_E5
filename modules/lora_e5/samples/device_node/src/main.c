@@ -9,8 +9,13 @@
  * lora_e5_sleep() -- waking is a full reboot back into main(), so this is
  * deliberately a linear per-wake sequence, not a persistent event loop.
  * See docs/Device_State_Machine.md's "Architecture" section for the full
- * rationale, including why a cached "already joined" flag can't skip the
- * join call (lora_e5_start_sync() always resets/reconfigures the modem).
+ * rationale. Uses lora_e5_resume_sync(), not start_sync()+join_sync():
+ * this board's LoRa-E5 stays continuously powered across the ESP32's
+ * deep sleep, so most wakes reach JOINED in tens of milliseconds via
+ * the modem's own retained session instead of a full ~8s
+ * RESET+CONFIG+JOIN sequence -- see docs/VERIFICATION_NEEDED.md's
+ * "Resolved 2026-07-11" section for how this was confirmed and
+ * lora_e5.h's lora_e5_resume_sync() doc comment for the API contract.
  */
 
 #include <zephyr/kernel.h>
@@ -180,16 +185,34 @@ int main(void)
 		goto sleep;
 	}
 
-	rc = lora_e5_start_sync(K_SECONDS(10));
+	/* lora_e5_resume_sync(), not start_sync()+join_sync(): this board's
+	 * LoRa-E5 stays continuously powered across the ESP32's own deep
+	 * sleep (confirmed by the project owner), so the fast path --
+	 * probe without AT+RESET, AT+JOIN directly -- reaches JOINED in
+	 * tens of milliseconds instead of the ~8s full sequence, on every
+	 * wake where the session survived. Safe to always call: if the
+	 * module ever did lose power, this transparently falls back to
+	 * the exact same full RESET+CONFIG+JOIN sequence start_sync()+
+	 * join_sync() always ran -- see docs/VERIFICATION_NEEDED.md's
+	 * "Resolved 2026-07-11" section for the measured numbers.
+	 */
+	rc = lora_e5_resume_sync(K_SECONDS(20));
 	if (rc != 0) {
-		LOG_ERR("lora_e5_start_sync failed (%d)", rc);
+		LOG_ERR("lora_e5_resume_sync failed (%d)", rc);
 		goto sleep;
 	}
 
-	rc = lora_e5_join_sync(K_SECONDS(20));
-	if (rc != 0) {
-		LOG_ERR("lora_e5_join_sync failed (%d)", rc);
-		goto sleep;
+	if (lora_e5_get_state() != LORA_E5_STATE_JOINED) {
+		/* Fast path fell back to the full sequence and landed at
+		 * READY (CLAUDE.md decision #2: resume_sync() never
+		 * auto-joins on the fallback path either) -- finish the
+		 * job exactly as lora_e5_join_sync() always did.
+		 */
+		rc = lora_e5_join_sync(K_SECONDS(20));
+		if (rc != 0) {
+			LOG_ERR("lora_e5_join_sync failed (%d)", rc);
+			goto sleep;
+		}
 	}
 
 	rc = lora_e5_send_sync(test_payload, sizeof(test_payload), K_SECONDS(15));

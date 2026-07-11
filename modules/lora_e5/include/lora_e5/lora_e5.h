@@ -52,6 +52,39 @@ int lora_e5_init(const struct lora_e5_hw_config *hw);
 int lora_e5_start(void);
 int lora_e5_start_sync(k_timeout_t timeout);
 
+/**
+ * @brief Fast-path alternative to lora_e5_start()+lora_e5_join(): if
+ * the LoRa-E5 module never lost power, this can reach JOINED in tens
+ * of milliseconds instead of the ordinary sequence's ~8 seconds, by
+ * probing WITHOUT issuing AT+RESET first and attempting AT+JOIN
+ * directly (skipping CONFIG entirely) -- confirmed real-hardware
+ * behavior, see docs/VERIFICATION_NEEDED.md's "Resolved 2026-07-11"
+ * section for the measured numbers and how this was verified.
+ *
+ * Safe to call unconditionally instead of lora_e5_start() -- this is
+ * NOT just an optimization for the lucky case. If the modem actually
+ * did lose power (or its AT parser desynced from MCU boot-time UART
+ * noise), the probe or the immediate join attempt fails and this
+ * transparently falls back to the exact same full RESET+CONFIG
+ * sequence lora_e5_start() always runs.
+ *
+ * Requires lora_e5_set_otaa()/lora_e5_set_abp() and
+ * lora_e5_set_region() to have been called first, same as
+ * lora_e5_start().
+ *
+ * Unlike lora_e5_start_sync() (which always stops at READY --
+ * CLAUDE.md decision #2, v1 never auto-joins after CONFIG), this can
+ * land at either JOINED (fast path worked) or READY (fell back to the
+ * full sequence) -- check lora_e5_get_state() after a successful
+ * return to tell which, and call lora_e5_join_sync() yourself if it's
+ * READY. This does not violate decision #2: the auto-join-to-JOINED
+ * behavior only happens inside this one explicitly-opted-into call,
+ * not as new autonomous behavior on the ordinary lora_e5_start() path,
+ * which is completely unchanged.
+ */
+int lora_e5_resume(void);
+int lora_e5_resume_sync(k_timeout_t timeout);
+
 /* ------------------------------------------------------------------- */
 /* Activation configuration (must be set before lora_e5_start())        */
 /* ------------------------------------------------------------------- */

@@ -36,6 +36,19 @@
  * (RECOVERY_PASS_RETRY_DELAY_MS) rather than the full exponential
  * join-duty-cycle-aware backoff Phase 1 §8.3 discusses -- see
  * docs/VERIFICATION_NEEDED.md.
+ *
+ * LORA_E5_STATE_RESUMING (added post-Phase-3, 2026-07-11) is the one
+ * deliberate exception to "JOINED is the only way in without an
+ * explicit join() call" -- lora_e5_resume()/resume_sync() is an
+ * explicitly opt-in alternative to lora_e5_start(), not new autonomous
+ * FSM behavior: CLAUDE.md decision #2 ("v1 does NOT auto-join after
+ * CONFIG") still holds for the ordinary start()/CONFIG path, which is
+ * completely unchanged. See handle_resume_request()/
+ * handle_probe_result()'s RESUMING branch and
+ * docs/VERIFICATION_NEEDED.md's "Resolved 2026-07-11" section for why
+ * this exists (a confirmed real-hardware ~60ms "+JOIN: Joined already"
+ * fast path when the modem never lost power, vs. the ordinary ~8s
+ * RESET+CONFIG+JOIN sequence).
  */
 
 #include "lora_e5_internal.h"
@@ -352,6 +365,33 @@ static void handle_start_request(void)
 	}
 }
 
+/** @brief lora_e5_resume()/resume_sync() entry point -- probes WITHOUT
+ *  a prior AT+RESET, on the assumption the modem never lost power and
+ *  may still hold a joined session (confirmed real-hardware behavior,
+ *  see docs/VERIFICATION_NEEDED.md's "Resolved 2026-07-11" section: a
+ *  bare AT+JOIN issued with no reset first returns "+JOIN: Joined
+ *  already" in ~60ms when the assumption holds). Falls back to the
+ *  ordinary full RESET+CONFIG path (via recovery_step_failed(), same
+ *  as any other fault -- deliberately NOT a special-cased fallback)
+ *  if the probe or the immediate join attempt fails for any reason,
+ *  including a genuine power loss this was betting against -- see
+ *  handle_probe_result()'s RESUMING branch below. */
+static void handle_resume_request(void)
+{
+	if (g_fsm.state != LORA_E5_STATE_OFF) {
+		return; /* Already started/starting -- idempotent no-op. */
+	}
+	if (!g_fsm.provision_cfg_valid) {
+		emit_error(-EINVAL);
+		return;
+	}
+
+	set_state(LORA_E5_STATE_RESUMING);
+	if (lora_e5_mm_probe() != 0) {
+		recovery_step_failed();
+	}
+}
+
 static void boot_settle_expired(struct k_work *work)
 {
 	ARG_UNUSED(work);
@@ -378,6 +418,30 @@ static void handle_boot_settle_expired(void)
 
 static void handle_probe_result(const struct lora_e5_fsm_event *evt)
 {
+	if (g_fsm.state == LORA_E5_STATE_RESUMING) {
+		if (evt->reset_result != 0) {
+			/* Unlike CHECK_AT's probe failure below, this is NOT
+			 * treated as a hard hardware fault straight to ERROR
+			 * -- RESUMING never issued a real AT+RESET, so a
+			 * failed probe here is much more likely to mean "the
+			 * modem actually lost power after all" or "its AT
+			 * parser desynced from MCU boot-time UART noise"
+			 * (see docs/VERIFICATION_NEEDED.md) than a genuine
+			 * wiring fault -- both recoverable by the ordinary
+			 * full RESET path, which is exactly what
+			 * recovery_step_failed() does.
+			 */
+			recovery_step_failed();
+			return;
+		}
+
+		set_state(LORA_E5_STATE_JOINING);
+		if (lora_e5_mm_join(g_fsm.provision_cfg.join_type) != 0) {
+			recovery_step_failed();
+		}
+		return;
+	}
+
 	if (g_fsm.state != LORA_E5_STATE_CHECK_AT) {
 		return;
 	}
@@ -722,6 +786,9 @@ static void process_event(const struct lora_e5_fsm_event *evt)
 	switch (evt->type) {
 	case LORA_E5_FSM_EVT_START_REQUEST:
 		handle_start_request();
+		break;
+	case LORA_E5_FSM_EVT_RESUME_REQUEST:
+		handle_resume_request();
 		break;
 	case LORA_E5_FSM_EVT_BOOT_SETTLE_EXPIRED:
 		handle_boot_settle_expired();

@@ -31,6 +31,21 @@ extern "C" {
  */
 enum lora_e5_state {
 	LORA_E5_STATE_OFF = 0,
+	LORA_E5_STATE_RESUMING,     /**< lora_e5_resume()/resume_sync() only:
+	                              *   probing without a prior AT+RESET,
+	                              *   on the assumption the modem never
+	                              *   lost power and may still be
+	                              *   joined. Falls back to the normal
+	                              *   RESET path (via the existing
+	                              *   recovery ladder) if the probe or
+	                              *   the immediate AT+JOIN attempt
+	                              *   fails -- see
+	                              *   docs/VERIFICATION_NEEDED.md's
+	                              *   "Resolved 2026-07-11" section for
+	                              *   why this can reach JOINED in
+	                              *   ~60ms instead of the full
+	                              *   RESET+CONFIG+JOIN sequence's ~8s
+	                              *   when the fast path works. */
 	LORA_E5_STATE_RESET,
 	LORA_E5_STATE_BOOT,
 	LORA_E5_STATE_CHECK_AT,
