@@ -559,3 +559,50 @@ should never hit this path.
   default is now 4096, with the empirical data points recorded in its
   Kconfig help text so a future size change gets re-verified against
   real hardware rather than re-estimated from arithmetic.
+
+---
+
+## Resolved 2026-07-12 (real hardware: esp32s3_devkitc, `samples/device_node`'s NVS-backed provisioning)
+
+- ~~`CONFIG_NVS=y` + `CONFIG_SETTINGS=y` + `CONFIG_SETTINGS_NVS=y` is
+  sufficient to get a working NVS settings backend~~ -- **[Certain,
+  real build]**, it is not, and the failure is silent rather than a
+  build error. `CONFIG_NVS` also `depends on FLASH` and
+  `FLASH_PAGE_LAYOUT`; `CONFIG_SETTINGS_NVS` separately `depends on
+  FLASH_MAP` -- none of which any other symbol in this sample enables
+  on its own. Unsatisfied `depends on` doesn't fail the build; Kconfig
+  just silently resolves the `SETTINGS` backend choice to
+  `SETTINGS_NONE` instead, logged only as a low-severity `warning:` in
+  full build output (easy to miss, `west build`'s default tail-summary
+  doesn't surface it). Confirmed by grepping the generated
+  `zephyr/.config` after a build that reported no errors: `CONFIG_NVS`
+  and `CONFIG_SETTINGS_NVS` were both silently absent. Fix: also
+  `CONFIG_FLASH=y` and `CONFIG_FLASH_MAP=y` in `prj.conf`.
+- ~~A blank/factory ESP32-S3's flash is safe to mount as a fresh NVS
+  filesystem on first use~~ -- **[Certain, real hardware]**, not
+  reliably, at least not on a dev board that's had prior firmware/data
+  written to it (as this one had, across this whole session's testing).
+  `settings_subsys_init()` failed with `-EDEADLK` ("all sectors
+  closed, this is not a nvs fs or irreparably corrupted",
+  `subsys/kvss/nvs/nvs.c`) the first time `CONFIG_SETTINGS_NVS`
+  actually took effect against the board's `storage_partition` --
+  its flash contents predate this sample and aren't a blank/erased NVS
+  filesystem. Fixed with `CONFIG_NVS_INIT_BAD_MEMORY_REGION=y`, Zephyr's
+  own sanctioned self-heal for exactly this condition (auto-erases and
+  creates a fresh NVS instead of failing) -- confirmed on real hardware
+  across two boot cycles (a fresh flash, then a real deep-sleep wake)
+  that NVS mounts cleanly both times afterward (`fs_nvs: 8 Sectors of
+  4096 bytes` logged identically on both boots, no corruption/re-heal
+  needed on the second). Recommended over a one-off manual
+  `esptool erase_region` workaround: it also protects any future
+  device whose flash isn't blank at first flash, not just this one dev
+  board.
+- Also fixed in the reused code generator (`scripts/gen_settings_module.py`,
+  a generic template pulled in from a different project, not written
+  for this one): its generated `settings_<module>.c` hardcoded
+  `LOG_MODULE_DECLARE(main, LOG_LEVEL_INF)`, assuming the consuming
+  app's own log module is literally named `main` -- a link failure for
+  any app that isn't (this project's `samples/device_node/src/main.c`
+  registers `lora_e5_device_node`). Changed the generator to have each
+  settings module `LOG_MODULE_REGISTER()` its own log module instead of
+  assuming a shared one exists.

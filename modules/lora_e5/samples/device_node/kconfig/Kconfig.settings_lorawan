@@ -1,0 +1,12 @@
+# Kconfig.settings_lorawan — AUTO-GENERATED from settings_lorawan.yaml
+# Source this file from your root Kconfig:
+#   rsource "Kconfig.settings_lorawan"
+
+config NVS_SETTINGS_LORAWAN_SHELL
+	bool "Enable shell commands for the 'lorawan' settings module"
+	default y
+	depends on SHELL
+	help
+	  When enabled, adds 'lorawan <key> <value>' and 'lorawan show'
+	  shell commands to inspect and modify Lorawan settings at runtime.
+	  Disable to save flash if the lorawan shell interface is not needed.

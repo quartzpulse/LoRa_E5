@@ -139,7 +139,13 @@ boot counter surviving power-off correctly. It now uses
 `lora_e5_resume_sync()` (see below) instead of
 `start_sync()`+`join_sync()` -- confirmed on real hardware that every
 one of three wake cycles hit the fast path, dropping wake-to-sleep time
-from ~15.7s to ~1.5-3.4s per cycle.
+from ~15.7s to ~1.5-3.4s per cycle. OTAA credentials + region are now
+NVS-backed (`config/settings_lorawan.yaml` + `scripts/gen_settings_module.py`,
+see `scripts/README.md`'s "In this project" section) instead of
+compile-time constants, confirmed on real hardware across a fresh-flash
+boot and a real deep-sleep wake -- two real Kconfig/NVS pitfalls hit and
+fixed along the way, documented in `prj.conf` and
+`docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-12" section.
 
 `lora_e5_resume()`/`lora_e5_resume_sync()` (public API, `lora_e5.h`) is
 a real, shipped alternative to `lora_e5_start()`+`lora_e5_join()`: a new

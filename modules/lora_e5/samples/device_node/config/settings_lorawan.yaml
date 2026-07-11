@@ -1,0 +1,106 @@
+# config/settings_lorawan.yaml — NVS Settings for LoRaWAN Device Configuration
+# ──────────────────────────────────────────────────────────────────────
+# Run: python3 scripts/gen_settings_module.py --yaml config/settings_lorawan.yaml
+# ──────────────────────────────────────────────────────────────────────
+
+module: lorawan
+description: "LoRaWAN Radio and Join Settings"
+out_dir: src/autogen-code
+shell: true
+
+entries:
+  # ── OTAA join identifiers ────────────────────────────────────────────
+  - kind: STR
+    type: lorawan_deveui_t
+    name_var: dev_eui
+    str_key: dev_eui
+    str_len: 17                 # 8 bytes as hex string + NUL
+
+  - kind: STR
+    type: lorawan_joineui_t
+    name_var: join_eui          # a.k.a. AppEUI
+    str_key: join_eui
+    str_len: 17
+
+  - kind: STR
+    type: lorawan_appkey_t
+    name_var: app_key
+    str_key: app_key
+    str_len: 33                 # 16 bytes as hex string + NUL
+    sensitive: true              # masked in get_setting responses
+
+  - kind: STR
+    type: lorawan_nwkkey_t
+    name_var: nwk_key           # LoRaWAN 1.1 only; unused for 1.0.x
+    str_key: nwk_key
+    str_len: 33
+    sensitive: true
+
+  # ── ABP session (used only when join_mode = false / ABP) ────────────
+  - kind: STR
+    type: lorawan_devaddr_t
+    name_var: dev_addr
+    str_key: dev_addr
+    str_len: 9                  # 4 bytes as hex string + NUL
+
+  - kind: STR
+    type: lorawan_nwkskey_t
+    name_var: nwk_s_key
+    str_key: nwk_s_key
+    str_len: 33
+    sensitive: true
+
+  - kind: STR
+    type: lorawan_appskey_t
+    name_var: app_s_key
+    str_key: app_s_key
+    str_len: 33
+    sensitive: true
+
+  # ── Join / MAC behavior ───────────────────────────────────────────────
+  - kind: BOOL
+    name_var: join_mode_otaa    # true = OTAA, false = ABP
+    str_key: join_mode_otaa
+
+  - kind: STR
+    type: lorawan_region_t
+    name_var: region            # e.g. "US915", "EU868", "AS923"
+    str_key: region
+    str_len: 8
+
+  # ── DEFERRED -- no lora_e5_set_*() exists yet for these (CLAUDE.md's
+  # "Known gaps" #2: lora_e5_config's port/adr/repeat/retry fields have
+  # no dedicated public setter). Re-enable once the library grows real
+  # setters for them; wiring NVS storage ahead of a settable API would
+  # let an application "set" a value via the generated shell/RPC that
+  # silently does nothing, which is worse than not having the field at
+  # all. See modules/lora_e5/samples/device_node/src/main.c's use of
+  # this YAML for what's actually wired today.
+  #
+  # - kind: INT
+  #   type: int32_t
+  #   name_var: sub_band          # e.g. FSB for US915/AU915, 0 = disabled
+  #   str_key: sub_band
+  #
+  # - kind: BOOL
+  #   name_var: adr_enabled       # adaptive data rate
+  #   str_key: adr_enabled
+  #
+  # - kind: INT
+  #   type: int32_t
+  #   name_var: data_rate         # DR index, ignored if adr_enabled
+  #   str_key: data_rate
+  #
+  # - kind: INT
+  #   type: int32_t
+  #   name_var: tx_power          # dBm, or index depending on region plan
+  #   str_key: tx_power
+  #
+  # - kind: BOOL
+  #   name_var: confirmed_uplink  # request ACK on uplinks
+  #   str_key: confirmed_uplink
+  #
+  # - kind: INT
+  #   type: int32_t
+  #   name_var: uplink_interval_sec
+  #   str_key: uplink_interval_sec

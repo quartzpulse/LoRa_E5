@@ -16,31 +16,53 @@
  * RESET+CONFIG+JOIN sequence -- see docs/VERIFICATION_NEEDED.md's
  * "Resolved 2026-07-11" section for how this was confirmed and
  * lora_e5.h's lora_e5_resume_sync() doc comment for the API contract.
+ *
+ * OTAA credentials + region are NVS-backed (config/settings_lorawan.yaml,
+ * scripts/gen_settings_module.py -- see scripts/README.md) instead of
+ * compile-time constants: DEFAULT_OTAA_CFG below seeds the settings
+ * store's in-RAM defaults on first boot (before settings_load() runs;
+ * a saved NVS record for a given key overrides its default, an absent
+ * one leaves the seeded default in place -- see load_provisioning()).
+ * Only credentials/region/join_mode_otaa are wired here -- sub_band/
+ * adr_enabled/data_rate/tx_power/confirmed_uplink/uplink_interval_sec
+ * are commented out in the YAML because lora_e5.h has no public setter
+ * for any of them yet (CLAUDE.md's "Known gaps" #2).
  */
+
+#include <errno.h>
+#include <string.h>
 
 #include <zephyr/kernel.h>
 #include <zephyr/device.h>
 #include <zephyr/logging/log.h>
 #include <zephyr/logging/log_ctrl.h>
 #include <zephyr/drivers/retained_mem.h>
+#include <zephyr/settings/settings.h>
 #include <zephyr/sys/poweroff.h>
 #include <esp_sleep.h>
 
 #include <lora_e5/lora_e5.h>
 
+#include "settings_lorawan.h"
+
 LOG_MODULE_REGISTER(lora_e5_device_node, LOG_LEVEL_INF);
 
 /**
- * Same confirmed-working OTAA credentials as samples/join (real join +
- * real uplink observed in ChirpStack) -- see that sample's main.c for the
- * verification note. Replace all three with your own device's values if
- * reusing this sample against a different module or network server.
+ * Confirmed-working OTAA credentials (real join + real uplink observed
+ * in ChirpStack, same as samples/join) -- used ONLY to seed the NVS
+ * settings store's defaults on a device's very first boot (empty
+ * flash). Once settings_save_one() has written a real record (e.g. via
+ * the "lorawan dev_eui <hex>" shell command, CONFIG_NVS_SETTINGS_LORAWAN_SHELL=y),
+ * that record wins on every subsequent boot -- see load_provisioning().
+ * Replace these three with your own device's values before flashing a
+ * fresh device, same as samples/join.
  */
-static const struct lora_e5_otaa_config otaa_cfg = {
+static const struct lora_e5_otaa_config default_otaa_cfg = {
 	.dev_eui = { .bytes = { 0x26, 0xC5, 0x18, 0xF8, 0xEF, 0x84, 0x0E, 0x5D } },
 	.app_eui = { .bytes = { 0x78, 0x36, 0xFC, 0xAF, 0xA7, 0x3B, 0x3E, 0xD3 } },
 	.app_key = { .bytes = { 0x5B, 0xD1, 0x95, 0x9C, 0x42, 0x57, 0xCD, 0x92, 0x15, 0x30, 0x53, 0xFD, 0x66, 0xDC, 0xF9, 0x59 } },
 };
+#define DEFAULT_REGION_NAME "IN865"
 
 static const uint8_t test_payload[] = { 0xDE, 0xAD, 0xBE, 0xEF };
 
@@ -128,6 +150,168 @@ static uint32_t read_and_bump_boot_count(esp_sleep_wakeup_cause_t cause)
 	return count;
 }
 
+/* ------------------------------------------------------------------- */
+/* NVS-backed provisioning (config/settings_lorawan.yaml)                */
+/* ------------------------------------------------------------------- */
+
+static int hex_nibble(char c)
+{
+	if (c >= '0' && c <= '9') {
+		return c - '0';
+	}
+	if (c >= 'A' && c <= 'F') {
+		return c - 'A' + 10;
+	}
+	if (c >= 'a' && c <= 'f') {
+		return c - 'a' + 10;
+	}
+	return -1;
+}
+
+static void bytes_to_hex(const uint8_t *bytes, size_t len, char *out, size_t out_len)
+{
+	static const char digits[] = "0123456789ABCDEF";
+	size_t n = MIN(len, (out_len - 1) / 2);
+
+	for (size_t i = 0; i < n; i++) {
+		out[i * 2] = digits[bytes[i] >> 4];
+		out[i * 2 + 1] = digits[bytes[i] & 0x0F];
+	}
+	out[n * 2] = '\0';
+}
+
+static int hex_to_bytes(const char *hex, uint8_t *out, size_t out_len)
+{
+	if (hex == NULL || strlen(hex) != out_len * 2) {
+		return -EINVAL;
+	}
+	for (size_t i = 0; i < out_len; i++) {
+		int hi = hex_nibble(hex[i * 2]);
+		int lo = hex_nibble(hex[i * 2 + 1]);
+
+		if (hi < 0 || lo < 0) {
+			return -EINVAL;
+		}
+		out[i] = (uint8_t)((hi << 4) | lo);
+	}
+	return 0;
+}
+
+static int parse_region(const char *name, enum lora_e5_region *out)
+{
+	static const struct {
+		const char *name;
+		enum lora_e5_region region;
+	} table[] = {
+		{ "EU868", LORA_E5_REGION_EU868 },
+		{ "US915", LORA_E5_REGION_US915 },
+		{ "US915HYBRID", LORA_E5_REGION_US915HYBRID },
+		{ "CN779", LORA_E5_REGION_CN779 },
+		{ "EU433", LORA_E5_REGION_EU433 },
+		{ "AU915", LORA_E5_REGION_AU915 },
+		{ "AU915OLD", LORA_E5_REGION_AU915OLD },
+		{ "CN470", LORA_E5_REGION_CN470 },
+		{ "AS923", LORA_E5_REGION_AS923 },
+		{ "KR920", LORA_E5_REGION_KR920 },
+		{ "IN865", LORA_E5_REGION_IN865 },
+		{ "RU864", LORA_E5_REGION_RU864 },
+	};
+
+	if (name == NULL) {
+		return -EINVAL;
+	}
+	for (size_t i = 0; i < ARRAY_SIZE(table); i++) {
+		if (strcmp(name, table[i].name) == 0) {
+			*out = table[i].region;
+			return 0;
+		}
+	}
+	return -EINVAL;
+}
+
+/** @brief Seeds lorawan_config's in-RAM defaults from default_otaa_cfg
+ *  BEFORE settings_load() runs. A key with a saved NVS record has
+ *  settings_load() overwrite this default; a key with no record (a
+ *  device's first boot, or one that was factory-reset) keeps it --
+ *  same pattern scripts/README.md documents for the template's
+ *  "shared" module. Does not itself touch NVS (no settings_save_one()
+ *  call) -- these are just this boot's in-RAM starting values.
+ */
+static void seed_default_provisioning(void)
+{
+	char hex[33];
+
+	bytes_to_hex(default_otaa_cfg.dev_eui.bytes, sizeof(default_otaa_cfg.dev_eui.bytes),
+		     hex, sizeof(hex));
+	strncpy(lorawan_config.dev_eui, hex, sizeof(lorawan_config.dev_eui) - 1);
+
+	bytes_to_hex(default_otaa_cfg.app_eui.bytes, sizeof(default_otaa_cfg.app_eui.bytes),
+		     hex, sizeof(hex));
+	strncpy(lorawan_config.join_eui, hex, sizeof(lorawan_config.join_eui) - 1);
+
+	bytes_to_hex(default_otaa_cfg.app_key.bytes, sizeof(default_otaa_cfg.app_key.bytes),
+		     hex, sizeof(hex));
+	strncpy(lorawan_config.app_key, hex, sizeof(lorawan_config.app_key) - 1);
+
+	strncpy(lorawan_config.region, DEFAULT_REGION_NAME, sizeof(lorawan_config.region) - 1);
+
+	/* Not yet read/branched on anywhere -- device_node is OTAA-only
+	 * today. Seeded so "lorawan show" reports a sensible value if the
+	 * shell is enabled, and so it's ready to wire up if ABP support is
+	 * ever added here.
+	 */
+	lorawan_config.join_mode_otaa = true;
+}
+
+/** @brief Brings up the NVS settings store and resolves this boot's
+ *  OTAA credentials + region from it (falling back to
+ *  default_otaa_cfg/DEFAULT_REGION_NAME wherever no NVS record exists
+ *  yet -- see seed_default_provisioning()). Must run before
+ *  lora_e5_set_otaa()/set_region(). */
+static int load_provisioning(struct lora_e5_otaa_config *out_otaa, enum lora_e5_region *out_region)
+{
+	int rc;
+
+	rc = settings_subsys_init();
+	if (rc != 0) {
+		return rc;
+	}
+
+	settings_lorawan_init();
+	seed_default_provisioning();
+	settings_load();
+
+	rc = hex_to_bytes(get_nvs_lorawan_deveui_t_dev_eui(), out_otaa->dev_eui.bytes,
+			   sizeof(out_otaa->dev_eui.bytes));
+	if (rc != 0) {
+		LOG_ERR("Invalid dev_eui in NVS settings (%d)", rc);
+		return rc;
+	}
+
+	rc = hex_to_bytes(get_nvs_lorawan_joineui_t_join_eui(), out_otaa->app_eui.bytes,
+			   sizeof(out_otaa->app_eui.bytes));
+	if (rc != 0) {
+		LOG_ERR("Invalid join_eui in NVS settings (%d)", rc);
+		return rc;
+	}
+
+	rc = hex_to_bytes(get_nvs_lorawan_appkey_t_app_key(), out_otaa->app_key.bytes,
+			   sizeof(out_otaa->app_key.bytes));
+	if (rc != 0) {
+		LOG_ERR("Invalid app_key in NVS settings (%d)", rc);
+		return rc;
+	}
+
+	rc = parse_region(get_nvs_lorawan_region_t_region(), out_region);
+	if (rc != 0) {
+		LOG_ERR("Invalid region '%s' in NVS settings (%d)",
+			get_nvs_lorawan_region_t_region(), rc);
+		return rc;
+	}
+
+	return 0;
+}
+
 static void go_to_sleep(void)
 {
 	const int wakeup_time_sec = CONFIG_DEVICE_NODE_WAKEUP_TIME_SEC;
@@ -159,11 +343,20 @@ int main(void)
 
 	LOG_INF("Wake cause=%d boot_count=%u", (int)cause, boot_count);
 
+	struct lora_e5_otaa_config loaded_otaa;
+	enum lora_e5_region loaded_region;
+	int rc;
+
+	rc = load_provisioning(&loaded_otaa, &loaded_region);
+	if (rc != 0) {
+		LOG_ERR("load_provisioning failed (%d)", rc);
+		goto sleep;
+	}
+
 	const struct lora_e5_hw_config hw = {
 		.uart_dev = DEVICE_DT_GET(DT_NODELABEL(uart2)),
 		.reset_gpio = NULL, /* AT+RESET only -- no reset-gpios wired on this board */
 	};
-	int rc;
 
 	rc = lora_e5_init(&hw);
 	if (rc != 0) {
@@ -173,13 +366,13 @@ int main(void)
 
 	lora_e5_register_callback(event_cb, NULL);
 
-	rc = lora_e5_set_otaa(&otaa_cfg);
+	rc = lora_e5_set_otaa(&loaded_otaa);
 	if (rc != 0) {
 		LOG_ERR("lora_e5_set_otaa failed (%d)", rc);
 		goto sleep;
 	}
 
-	rc = lora_e5_set_region(LORA_E5_REGION_IN865);
+	rc = lora_e5_set_region(loaded_region);
 	if (rc != 0) {
 		LOG_ERR("lora_e5_set_region failed (%d)", rc);
 		goto sleep;
