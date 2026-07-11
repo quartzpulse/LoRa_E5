@@ -1,0 +1,14 @@
+sample:
+  name: Portable RGB status LED demo
+  description: >
+    Minimal demonstration of the status_led library: boot -> provisioning ->
+    network -> MQTT -> OTA -> fatal error lifecycle, driving a real WS2812
+    over SPI3. See modules/status_led/README.md for the full state/pattern
+    table and the other available hardware backends.
+tests:
+  sample.status_led.basic:
+    # Requires the real WS2812 wiring in boards/esp32s3_devkitc_procpu.overlay
+    # (GPIO38/SPI3) -- build-only in CI/twister.
+    build_only: true
+    platform_allow: esp32s3_devkitc/esp32s3/procpu
+    tags: status_led
