@@ -1,0 +1,48 @@
+{
+  "projects": {
+    "join": {
+      "rel_path": "modules/lora_e5/samples/join",
+      "name": "join",
+      "buildConfigs": {
+        "build/esp32s3_devkitc/esp32s3/procpu": {
+          "relBoardSubDir": "espressif/esp32s3_devkitc",
+          "board": "esp32s3_devkitc/esp32s3/procpu",
+          "name": "build/esp32s3_devkitc/esp32s3/procpu",
+          "compilerOptimization": "debug",
+          "westBuildArgs": [],
+          "westBuildCMakeArgs": [
+            "-DCONFIG_DEBUG_OPTIMIZATIONS=y",
+            "-DCONFIG_DEBUG_THREAD_INFO=y",
+            "-DZEPHYR_EXTRA_MODULES=/home/sachin/projects/LoRa_E5/modules/lora_e5"
+          ],
+          "confFiles": {
+            "config": [],
+            "overlay": []
+          }
+        }
+      },
+      "twisterConfigs": {},
+      "confFiles": {
+        "config": [],
+        "overlay": []
+      }
+    }
+  },
+  "runnerProfiles": [
+    {
+      "name": "esp32",
+      "flash": {
+        "kind": "west-flash",
+        "runner": "esp32"
+      },
+      "debug": {
+        "kind": "west-debug",
+        "runner": "esp32"
+      },
+      "attach": {
+        "kind": "west-debug",
+        "runner": "esp32"
+      }
+    }
+  ]
+}
