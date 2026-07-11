@@ -1283,6 +1283,52 @@ int lora_e5_mm_get_max_payload(size_t *out, k_timeout_t timeout)
 	return -ENOTSUP;
 }
 
+int lora_e5_mm_get_public_network_mode(bool *out, k_timeout_t timeout)
+{
+	struct lora_e5_at_cmd_desc desc;
+	struct lora_e5_at_result result;
+	int rc;
+
+	if (out == NULL) {
+		return -EINVAL;
+	}
+
+	rc = lora_e5_hf_build_public_network_query(&desc);
+	if (rc != 0) {
+		return rc;
+	}
+	desc.timeout_ms = CONFIG_LORA_E5_CMD_TIMEOUT_MS;
+
+	rc = lora_e5_at_submit_sync(&desc, timeout, &result);
+	if (rc != 0) {
+		return rc;
+	}
+	if (result.result_tag != LORA_E5_MM_TAG_OK) {
+		return -EIO;
+	}
+
+	/* Confirmed capture is "NET, ON" (VERIFICATION_NEEDED.md); "NET,
+	 * OFF" is inferred by symmetry with AT+LW=DC's "DC, OFF, 0" in the
+	 * same session, not directly captured -- see
+	 * lora_e5_hf_build_public_network_query()'s doc comment. Anything
+	 * else is logged and refused rather than guessed either way.
+	 */
+	if (result.captured_text_len >= 7 &&
+	    strncmp(result.captured_text, "NET, ON", 7) == 0) {
+		*out = true;
+		return 0;
+	}
+	if (result.captured_text_len >= 8 &&
+	    strncmp(result.captured_text, "NET, OFF", 8) == 0) {
+		*out = false;
+		return 0;
+	}
+
+	LOG_WRN("AT+LW=NET: unrecognized response \"%s\" -- refusing to guess "
+		"ON/OFF", result.captured_text);
+	return -ENOTSUP;
+}
+
 /* ------------------------------------------------------------------- */
 /* Raw passthrough                                                       */
 /* ------------------------------------------------------------------- */

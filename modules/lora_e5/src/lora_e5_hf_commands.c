@@ -805,3 +805,26 @@ int lora_e5_hf_build_max_payload_query(struct lora_e5_at_cmd_desc *desc)
 	};
 	return 0;
 }
+
+static const struct lora_e5_at_terminal_event te_lw_net[] = {
+	{ .prefix = "LW", .remainder = NULL,
+	  .match_mode = LORA_E5_AT_MATCH_ANY_URC,
+	  .result_tag = LORA_E5_MM_TAG_OK },
+	ANY_ERROR_ENTRY,
+};
+
+int lora_e5_hf_build_public_network_query(struct lora_e5_at_cmd_desc *desc)
+{
+	static const char cmd[] = "AT+LW=NET";
+
+	if (desc == NULL) {
+		return -EINVAL;
+	}
+	*desc = (struct lora_e5_at_cmd_desc){
+		.cmd = cmd,
+		.cmd_len = sizeof(cmd) - 1,
+		.terminal_events = te_lw_net,
+		.terminal_event_count = ARRAY_SIZE(te_lw_net),
+	};
+	return 0;
+}

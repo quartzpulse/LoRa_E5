@@ -152,6 +152,29 @@ int lora_e5_get_version(struct lora_e5_version *out, k_timeout_t timeout);
 int lora_e5_get_ids(struct lora_e5_ids *out, k_timeout_t timeout);
 
 /**
+ * @brief Query whether the modem is set to use the public-network sync
+ * word (AT+LW=NET, spec Sec 4.28.4) -- ON = public LoRaWAN network,
+ * OFF = private. This is a static configuration setting, NOT a
+ * join/session status indicator -- despite the tempting name, do not
+ * use this to decide whether a rejoin is needed. This codebase briefly
+ * shipped it mislabeled as "get_join_status()" before checking the
+ * primary spec PDF; corrected 2026-07-11, see
+ * docs/VERIFICATION_NEEDED.md for the full story and for where the
+ * real "already joined" signal actually lives (AT+JOIN's own "+JOIN:
+ * Joined already" response, not a separate query).
+ *
+ * Unlike every other query in this header, this can be called right
+ * after lora_e5_init() -- before lora_e5_start()/start_sync() has ever
+ * run this power cycle -- since it only needs the AT Command Manager
+ * (set up by lora_e5_init()) to be alive, not a completed boot/config
+ * sequence.
+ *
+ * Does NOT itself change FSM state -- lora_e5_get_state() still
+ * reports LORA_E5_STATE_OFF until lora_e5_start() runs.
+ */
+int lora_e5_get_public_network_mode(bool *out, k_timeout_t timeout);
+
+/**
  * @brief Max payload for the CURRENT data rate. DR-dependent, changes
  * under ADR -- do not cache across a TX_FAILED(LENGTH_ERROR) without
  * re-querying.

@@ -196,6 +196,30 @@ struct lora_e5_at_terminal_event {
 	                                   *   unsolicited notification. */
 };
 
+/** Max length of a matched terminal line's captured remainder text
+ *  (see struct lora_e5_at_result.captured_text) -- sized against the
+ *  query responses this exists for, longest confirmed real capture
+ *  being "CDR, TXDR(0,7), RXDR(0,7)" (25 chars, VERIFICATION_NEEDED.md)
+ *  with headroom to 31. Longer remainders are truncated, not rejected
+ *  -- a truncated-but-present value is more useful to a caller than an
+ *  outright failure.
+ *
+ *  DO NOT casually enlarge this: struct lora_e5_at_result is embedded
+ *  in a fixed struct cb_invocation cascade[MAX_CASCADE] array that is
+ *  a STACK-LOCAL variable in lora_e5_cmd_queue.c's RX-work-queue
+ *  functions (lora_e5_cmd_queue_submit(), timeout_handler(),
+ *  lora_e5_cmd_queue_process_line()) -- every byte added here is
+ *  multiplied by MAX_CASCADE (CONFIG_LORA_E5_CMD_QUEUE_DEPTH + 1, 9 by
+ *  default) against CONFIG_LORA_E5_RX_STACK_SIZE's budget. Confirmed
+ *  on real hardware: raising this to 63 without also raising the RX
+ *  stack budget overflowed it and crashed with EXCCAUSE 28 (load
+ *  prohibited) during a context restore -- a stack overflow, not a
+ *  null-pointer bug, and non-obvious from the crash trace alone. If
+ *  this ever needs to grow, CONFIG_LORA_E5_RX_STACK_SIZE's default
+ *  must grow with it (roughly: new_default_max * MAX_CASCADE more
+ *  bytes, plus margin). */
+#define LORA_E5_AT_CAPTURED_TEXT_MAX 31
+
 /** Hard cap on terminal_events[] length per descriptor. The AT Command
  *  Manager allocates a fixed-size match-progress counter array of this
  *  size per active transaction (no dynamic allocation) --
@@ -264,6 +288,23 @@ struct lora_e5_at_result {
 	enum lora_e5_at_error error_code; /**< Valid only when the match
 	                                    *   was an ERROR line. */
 	void *user_data;          /**< Echoed from the descriptor. */
+
+	/** The matched line's remainder text (everything after
+	 *  "+PREFIX: ", or after bare "OK"/"ERROR(-N)" with no prefix --
+	 *  empty in that case). Only valid when outcome == MATCHED; empty
+	 *  ("" / captured_text_len == 0) on TIMEOUT/UART_ERROR, or when
+	 *  required_matches > 1 resolved on a line whose remainder was
+	 *  NULL. Truncated (not an error) if the real remainder exceeds
+	 *  LORA_E5_AT_CAPTURED_TEXT_MAX. Added specifically so single-line
+	 *  query commands (AT+VER, AT+LW=<subcommand>, etc.) can report a
+	 *  real value back to the caller instead of the -ENOTSUP refusal
+	 *  this engine had no way to avoid before this field existed --
+	 *  see lora_e5_mm_get_version()'s prior doc comment. Does NOT
+	 *  solve multi-line responses (AT+ID's required_matches=3 still
+	 *  only captures the line that satisfied the count, not all
+	 *  three) -- that needs a separate mechanism if ever needed. */
+	char captured_text[LORA_E5_AT_CAPTURED_TEXT_MAX + 1];
+	size_t captured_text_len;
 };
 
 typedef void (*lora_e5_at_result_cb_t)(const struct lora_e5_at_result *result);

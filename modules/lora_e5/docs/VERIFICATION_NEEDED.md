@@ -409,4 +409,99 @@ should never hit this path.
   anyway) resolves the loop with no other changes. A Zephyr Kconfig
   tree issue, not a lora_e5 logic bug, but the module's own
   `select` was the direct trigger, so fixed here rather than filed
-  upstream only.
+  separately.
+
+---
+
+## Resolved 2026-07-11 (real hardware: LoRa-E5-HF, ESP32-S3 UART2/GPIO39-40, firmware V4.0.11 -- module continuously powered, never externally reset, across every step below)
+
+- ~~Can the LoRa-E5's own network/join status be queried, and does a
+  retained session let boot skip AT+RESET/AT+JOIN?~~ -- investigated in
+  two passes; the first pass's own premise was wrong and got corrected
+  by the second, so both are recorded here rather than silently
+  overwritten:
+  1. **First pass (WRONG, corrected below)**: assumed `AT+LW=NET`
+     ("+LW: NET, ON" observed in an earlier session's capture) was a
+     join/network-status query, without checking the primary spec PDF
+     first. Built `lora_e5_get_join_status()` on that assumption,
+     confirmed on real hardware that it read `joined=1` (i.e. `NET,
+     ON`) both before AND after a full `lora_e5_start_sync()`
+     (`AT+RESET` + `CONFIG`) -- true, but not evidence of anything
+     join-related. A follow-up test then called `lora_e5_join_sync()`
+     right after and timed it at **8015 ms**, statistically identical
+     to a real fresh OTAA handshake, not an instant "already joined"
+     result -- which read at the time as "the query doesn't predict
+     the fast path," rather than the real explanation (below).
+  2. **Corrected [Certain, primary spec PDF §4.28.4]**: `AT+LW=NET`
+     selects/reports the standard LoRaWAN **public-vs-private network
+     sync word** ("Set ON to choose public network, set OFF to choose
+     private network") -- a static configuration flag, completely
+     unrelated to join/session state. It read `ON` consistently for
+     the boring reason that it's a config setting, not a live
+     indicator; the timing "finding" above was correct data pointing
+     at the wrong cause. Renamed throughout to
+     `lora_e5_get_public_network_mode()` /
+     `lora_e5_mm_get_public_network_mode()` /
+     `lora_e5_hf_build_public_network_query()` to stop implying
+     otherwise. **How this was caught**: cross-checking against the
+     primary AT Command Specification PDF (`docs/LoRa-E5 AT Command
+     Specification_V1.0 .pdf`), which had not been consulted before
+     building the query -- exactly the failure mode this file's
+     confidence-tagging convention exists to prevent, and a reminder
+     to check the primary source before shipping a `[Certain, real
+     hardware]` tag on an *interpretation* of a capture, not just the
+     capture's literal text.
+  3. **The real join-status mechanism, per spec §4.5.2**: `AT+JOIN`
+     itself returns `"+JOIN: Joined already"` when "LoRaWAN modem
+     already joined to a network previously" (note: "use AT+JOIN=FORCE
+     to force join if needed") -- already modeled in this codebase as
+     `LORA_E5_MM_TAG_JOIN_ALREADY` in `te_join[]`
+     (`lora_e5_hf_commands.c`), mapped to a success outcome. This is
+     the spec-documented way to detect/benefit from a retained
+     session -- not a separate status query.
+  4. **Still open**: why the real 8015 ms join in step 1 didn't hit
+     that path. Spec §4.23 (MODE) is the leading candidate, not yet
+     directly confirmed by an isolated test: `"AT+MODE" command will
+     reset LoRaWAN stack when first enter LWABP/LWOTAA mode` -- this
+     library's `CONFIG` sequence re-issues `AT+MODE=LWOTAA`
+     unconditionally on every boot (`lora_e5_hf_commands.c`), which,
+     if re-issuing the same mode still counts as "entering" it, would
+     explain why `AT+JOIN` never reaches the modem's own "already
+     joined" state: our own CONFIG step resets the stack every time,
+     regardless of what `AT+RESET` itself does. Not yet isolated by a
+     real-hardware test that skips the redundant `AT+MODE=LWOTAA`
+     reissue when already in that mode and checks whether `AT+JOIN`
+     then takes the fast path -- next step if this is revisited.
+  Implemented as part of this investigation, independent of the
+  answer above and reusable regardless: `struct lora_e5_at_result`
+  (`lora_e5_at.h`) gained a `captured_text`/`captured_text_len` field
+  so a matched terminal line's actual text can finally reach a
+  caller -- previously `lora_e5_mm_get_version()`/`get_ids()`/
+  `get_max_payload()` were all stubbed to `-ENOTSUP` for exactly this
+  missing capability (see their doc comments, not yet fixed to use the
+  new field -- only `lora_e5_mm_get_public_network_mode()` does).
+- ~~Adding a text-capture field to `struct lora_e5_at_result` is
+  "just" a struct change~~ -- **[Certain, real hardware, the hard
+  way]**. That struct is embedded in a fixed `cascade[MAX_CASCADE]`
+  array (`MAX_CASCADE` = `CONFIG_LORA_E5_CMD_QUEUE_DEPTH + 1`, 9 by
+  default) that is a **stack-local** variable in several of
+  `lora_e5_cmd_queue.c`'s RX-work-queue functions -- every byte added
+  to the struct is multiplied by 9 against
+  `CONFIG_LORA_E5_RX_STACK_SIZE`'s budget. A first attempt
+  (`LORA_E5_AT_CAPTURED_TEXT_MAX = 63`, stack left at the old default
+  1536) crashed on real hardware with `EXCCAUSE 28 (load prohibited)`
+  during a context restore -- a classic stack-overflow signature, not
+  an obviously-attributable fault from the crash trace alone. Shrinking
+  the cap to 31 and bumping the stack to 2048 (a reasoned-but-not-
+  measured estimate) **still hung silently** at the very first
+  post-boot AT transaction, with no crash at all -- worse than the
+  crash, since a clean-looking hang gives no signal that stack size is
+  even the right thing to suspect. Bisected empirically by rebuilding
+  the same firmware with the RX stack at 4096: full real
+  boot/join/send/sleep cycle completed successfully. `native_sim`'s 57
+  tests kept passing throughout all of this (host-native pthread
+  stacks don't reproduce embedded stack budgets), so this class of bug
+  is real-hardware-only to catch. `CONFIG_LORA_E5_RX_STACK_SIZE`'s
+  default is now 4096, with the empirical data points recorded in its
+  Kconfig help text so a future size change gets re-verified against
+  real hardware rather than re-estimated from arithmetic.

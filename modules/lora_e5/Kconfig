@@ -49,10 +49,30 @@ config LORA_E5_HAS_RESET_GPIO
 
 config LORA_E5_RX_STACK_SIZE
 	int "RX work queue stack size"
-	default 1536
+	default 4096
 	help
 	  Stack for the dedicated work queue running UART line assembly,
 	  AT parsing, and AT Command Manager response routing.
+
+	  Bumped from 1536 when struct lora_e5_at_result grew a captured-
+	  text field (LORA_E5_AT_CAPTURED_TEXT_MAX in lora_e5_at.h): that
+	  struct is embedded in a stack-local cascade[MAX_CASCADE] array in
+	  several of this queue's own functions, so its size is multiplied
+	  by MAX_CASCADE (CONFIG_LORA_E5_CMD_QUEUE_DEPTH + 1) against this
+	  budget. Confirmed on real esp32s3_devkitc hardware, not just
+	  estimated: 1536 crashed (EXCCAUSE 28 during a context restore --
+	  a stack overflow, not an obviously-attributable fault from the
+	  trace alone); 2048 was ALSO insufficient and hung silently at the
+	  first post-boot AT transaction with no crash at all (worse --
+	  don't trust a clean-looking hang as proof of a large-enough
+	  stack); 4096 ran a full real boot/join/send/sleep cycle
+	  successfully. Given how easy this class of bug is to
+	  underestimate (native_sim's host-native stacks don't reproduce
+	  it -- all 57 tests kept passing throughout), this default keeps
+	  real margin rather than the tightest value that happened to work
+	  once. If LORA_E5_AT_CAPTURED_TEXT_MAX or
+	  CONFIG_LORA_E5_CMD_QUEUE_DEPTH ever grow further, re-verify
+	  against real hardware, not just arithmetic.
 
 config LORA_E5_FSM_STACK_SIZE
 	int "FSM work queue stack size"

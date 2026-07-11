@@ -1,0 +1,61 @@
+/*
+ * Enables &uart2 for the LoRa-E5-HF, wired TX=GPIO40/RX=GPIO39 -- same
+ * wiring and rationale as samples/join's overlay (see that file's doc
+ * comment for the DMA/Async-API-vs-Interrupt-Driven history). Kept in
+ * sync manually since sample overlays aren't shared between samples.
+ *
+ * Also carves out a small retained-memory region from rtc_slow_ram so a
+ * boot/wake counter can survive ESP32 deep sleep -- copied from
+ * external/zephyr/samples/boards/espressif/deep_sleep's own
+ * esp32s3_devkitc_procpu.overlay (that sample demonstrates exactly this
+ * board + CONFIG_RETAINED_MEM combination). See
+ * docs/Device_State_Machine.md's "Architecture" section point 5 for why
+ * this specific base address/size is safe on this SoC.
+ */
+
+&uart2 {
+	status = "okay";
+	current-speed = <9600>;
+	pinctrl-0 = <&uart2_default>;
+	pinctrl-names = "default";
+};
+
+&pinctrl {
+	uart2_default: uart2_default {
+		group1 {
+			pinmux = <UART2_TX_GPIO40>;
+			output-high;
+		};
+
+		group2 {
+			pinmux = <UART2_RX_GPIO39>;
+			bias-pull-up;
+		};
+	};
+};
+
+/ {
+	aliases {
+		retainedmemdevice = &retainedmem0;
+	};
+
+	memory@50001f00 {
+		compatible = "zephyr,memory-region", "mmio-sram";
+		reg = <0x50001f00 0x100>;
+		zephyr,memory-region = "RTC_SLOW_RAM_RETAINED_MEM";
+		status = "okay";
+
+		retainedmem0: retainedmem {
+			compatible = "zephyr,retained-ram";
+			status = "okay";
+		};
+	};
+};
+
+&rtc_slow_ram {
+	/* Shrink rtc_slow_ram size to avoid overlap with retained memory
+	 * region: 8KB - 256 = 0x1f00 (same carve-out as the reference
+	 * deep_sleep sample).
+	 */
+	reg = <0x50000000 0x1f00>;
+};

@@ -1,0 +1,15 @@
+# Copyright (c) 2026
+# SPDX-License-Identifier: Apache-2.0
+
+mainmenu "LoRa-E5 device_node sample"
+
+config DEVICE_NODE_WAKEUP_TIME_SEC
+	int "Deep sleep interval between wake/join/send cycles (seconds)"
+	default 60
+	help
+	  Each wake reboots into main(), runs the full init/config/join/send
+	  sequence (see docs/Device_State_Machine.md's "Architecture" section
+	  for why this can't be shortened to a resume), then re-arms an RTC
+	  timer for this many seconds and powers off again.
+
+source "Kconfig.zephyr"

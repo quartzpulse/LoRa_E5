@@ -1,0 +1,13 @@
+sample:
+  name: LoRa-E5 duty-cycled device node sample
+  description: >
+    Wake from ESP32 deep sleep on a timer, join, send a test uplink through
+    the full lora_e5 library stack, then re-arm the timer and power off.
+    See docs/Device_State_Machine.md for the architecture this implements.
+tests:
+  sample.lora_e5.device_node:
+    # Requires real LoRa-E5-HF hardware wired to UART2 and OTAA
+    # credentials filled in (src/main.c) -- build-only in CI/twister.
+    build_only: true
+    platform_allow: esp32s3_devkitc/esp32s3/procpu
+    tags: lora_e5

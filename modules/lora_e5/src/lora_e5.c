@@ -573,6 +573,11 @@ int lora_e5_get_max_payload(size_t *out, k_timeout_t timeout)
 	return lora_e5_mm_get_max_payload(out, timeout);
 }
 
+int lora_e5_get_public_network_mode(bool *out, k_timeout_t timeout)
+{
+	return lora_e5_mm_get_public_network_mode(out, timeout);
+}
+
 enum lora_e5_state lora_e5_get_state(void)
 {
 	return lora_e5_fsm_get_state_sync();

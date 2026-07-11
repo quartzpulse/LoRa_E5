@@ -235,6 +235,7 @@ static size_t try_dispatch_and_cascade_locked(struct cb_invocation *out, size_t 
  */
 static void resolve_current_locked(enum lora_e5_at_outcome outcome, int tag,
 				    enum lora_e5_at_error err,
+				    const struct lora_e5_at_line *matched_line,
 				    struct cb_invocation *out, size_t out_cap,
 				    size_t *n_inout)
 {
@@ -248,6 +249,18 @@ static void resolve_current_locked(enum lora_e5_at_outcome outcome, int tag,
 			.error_code = err,
 			.user_data = active.desc.user_data,
 		};
+
+		if (matched_line != NULL && matched_line->remainder != NULL) {
+			size_t len = matched_line->remainder_len;
+
+			if (len > LORA_E5_AT_CAPTURED_TEXT_MAX) {
+				len = LORA_E5_AT_CAPTURED_TEXT_MAX;
+			}
+			memcpy(out[*n_inout].result.captured_text,
+			       matched_line->remainder, len);
+			out[*n_inout].result.captured_text[len] = '\0';
+			out[*n_inout].result.captured_text_len = len;
+		}
 		(*n_inout)++;
 	} else {
 		LOG_ERR("cascade buffer exhausted, dropping a result callback");
@@ -297,11 +310,11 @@ static void timeout_handler(struct k_work *work)
 					K_MSEC(active.desc.timeout_ms));
 			} else {
 				resolve_current_locked(LORA_E5_AT_OUTCOME_UART_ERROR,
-							0, 0, cascade, MAX_CASCADE, &n);
+							0, 0, NULL, cascade, MAX_CASCADE, &n);
 			}
 		} else {
 			resolve_current_locked(LORA_E5_AT_OUTCOME_TIMEOUT,
-						0, 0, cascade, MAX_CASCADE, &n);
+						0, 0, NULL, cascade, MAX_CASCADE, &n);
 		}
 	}
 	/* else: timer fired for a transaction that already resolved via
@@ -443,7 +456,7 @@ void lora_e5_cmd_queue_process_line(const struct lora_e5_at_line *line)
 					te->result_tag,
 					line->kind == LORA_E5_AT_LINE_ERROR
 						? line->error_code : 0,
-					cascade, MAX_CASCADE, &n);
+					line, cascade, MAX_CASCADE, &n);
 			}
 			/* else: partial match toward a multi-occurrence
 			 * terminal condition -- consumed, transaction stays

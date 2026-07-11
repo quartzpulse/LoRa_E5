@@ -272,6 +272,30 @@ int lora_e5_hf_build_ver_query(struct lora_e5_at_cmd_desc *desc);
  */
 int lora_e5_hf_build_max_payload_query(struct lora_e5_at_cmd_desc *desc);
 
+/**
+ * @brief AT+LW=NET public/private network query.
+ *
+ * CORRECTED [Certain, primary spec PDF §4.28.4, checked 2026-07-11 after
+ * this codebase briefly mislabeled this as a join-status query --
+ * see docs/VERIFICATION_NEEDED.md for the full correction]: "NET"
+ * selects/reports the standard LoRaWAN public-vs-private network sync
+ * word (`AT+LW=NET,"ON/OFF"` -- ON = public network, OFF = private), a
+ * static configuration setting. It has NOTHING to do with join/session
+ * status, despite the name being easy to misread that way -- do not
+ * build a "is the modem joined" check on top of this query. If a
+ * join-status check is ever needed, the spec-documented mechanism is
+ * AT+JOIN's own "+JOIN: Joined already" response (§4.5.2,
+ * LORA_E5_MM_TAG_JOIN_ALREADY in te_join[] below) -- not a bare status
+ * query.
+ *
+ * SUBCOMMAND CONFIRMED [Certain, real hardware capture, 2026-07-05,
+ * LoRa-E5-HF firmware V4.0.11]: `AT+LW=NET` returned `+LW: NET, ON`.
+ * `lora_e5_mm_get_public_network_mode()` logs a warning rather than
+ * guessing if a captured_text value other than "NET, ON"/"NET, OFF" is
+ * ever seen, instead of silently misreporting it either way.
+ */
+int lora_e5_hf_build_public_network_query(struct lora_e5_at_cmd_desc *desc);
+
 #ifdef __cplusplus
 }
 #endif

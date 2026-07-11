@@ -130,6 +130,39 @@ GPIO39/40 -- switched from UART1/GPIO17-18 during bring-up), and
 just a build). `samples/join/build.sh` wraps the
 `ZEPHYR_EXTRA_MODULES=...` build/flash incantation for reuse.
 
+`samples/device_node/` (duty-cycled real-ESP32-deep-sleep node built on
+`samples/join`'s sequence -- see `docs/Device_State_Machine.md`'s
+"Architecture" and "Confirmed against real hardware" sections) is also
+implemented and confirmed on real hardware: three consecutive real
+deep-sleep/wake/rejoin/send cycles observed over serial, retained-memory
+boot counter surviving power-off correctly.
+
+`lora_e5_get_public_network_mode()` (public API, `AT+LW=NET`) queries
+the modem's public-vs-private LoRaWAN sync word setting (spec §4.28.4)
+-- a static config flag, NOT a join/session status indicator. This was
+initially shipped mislabeled as `get_join_status()`, on the wrong
+assumption that "NET" meant join state; caught and corrected by
+checking the primary AT spec PDF -- see `docs/VERIFICATION_NEEDED.md`'s
+"Resolved 2026-07-11" section for the full story, including where the
+real "already joined" signal actually lives (`AT+JOIN`'s own `"+JOIN:
+Joined already"` response, spec §4.5.2 --
+`LORA_E5_MM_TAG_JOIN_ALREADY` in `lora_e5_hf_commands.c`, already
+implemented but not currently reachable through
+`lora_e5_start_sync()`'s CONFIG sequence -- see that section for why).
+Implementing this query added a `captured_text` field to `struct
+lora_e5_at_result` (`lora_e5_at.h`) so a matched terminal line's text
+can finally reach a caller -- this also unblocks (not yet done)
+properly implementing `lora_e5_mm_get_version()`/`get_max_payload()`,
+previously stubbed `-ENOTSUP` for exactly this missing capability. This
+struct change required raising `CONFIG_LORA_E5_RX_STACK_SIZE`'s default
+to 4096 (see that Kconfig symbol's help text) -- confirmed on real
+hardware, not estimated; a smaller bump crashed, and a still-larger-
+but-still-wrong guess hung silently with no crash at all. Watch for
+this class of bug (a struct embedded in a stack-local array in
+`lora_e5_cmd_queue.c`) if `struct lora_e5_at_result` or
+`CONFIG_LORA_E5_CMD_QUEUE_DEPTH` ever grow again -- `native_sim`'s
+tests do not catch it.
+
 Not yet implemented: `samples/uplink/`, `samples/shell/` (no stated
 requirement drove these yet).
 
@@ -146,6 +179,15 @@ requirement drove these yet).
   (`tests/<suite>/../../` → module root), not three. Verify with
   `realpath -e` against the real tree before trusting a path looks
   right by eye.
+- **`CONFIG_PM=y` + `CONFIG_LOG=y` fails to link on esp32s3 in this
+  Zephyr checkout.** `soc/espressif/common/power.c` (compiled whenever
+  `CONFIG_PM=y`) does `LOG_MODULE_DECLARE(soc, ...)` but no espressif
+  SoC file provides the matching `LOG_MODULE_REGISTER(soc, ...)` --
+  `undefined reference to log_const_soc` at link time. Reproduced even
+  on the unmodified upstream `samples/boards/espressif/deep_sleep` with
+  `CONFIG_LOG=y` added, so this is a pre-existing gap in the vendored
+  Zephyr tree, not something introduced here. Workaround (see
+  `samples/device_node/prj.conf`): `CONFIG_SOC_LOG_LEVEL_OFF=y`.
 - **`LOG_MODULE_REGISTER`/`LOG_MODULE_DECLARE` argument order matters
   at the preprocessor level.** If a file defines a fallback for
   `CONFIG_LORA_E5_LOG_LEVEL` (until Kconfig exists), that `#ifndef`

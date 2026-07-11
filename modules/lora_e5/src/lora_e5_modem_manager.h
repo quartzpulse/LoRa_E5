@@ -242,6 +242,28 @@ int lora_e5_mm_get_ids(struct lora_e5_ids *out, k_timeout_t timeout);
  */
 int lora_e5_mm_get_max_payload(size_t *out, k_timeout_t timeout);
 
+/**
+ * @brief AT+LW=NET, blocking wrapper. Reports whether the modem is set
+ * to use the public-network sync word (ON) or a private one (OFF) --
+ * spec §4.28.4. NOT a join-status query despite how the name reads;
+ * this codebase briefly mislabeled it that way before checking the
+ * primary spec PDF -- see lora_e5_hf_build_public_network_query()'s
+ * doc comment and docs/VERIFICATION_NEEDED.md for the correction and
+ * for where the real join-status signal lives (AT+JOIN's own "+JOIN:
+ * Joined already" response).
+ *
+ * Can be called before lora_e5_start()/start_sync() has ever run this
+ * power cycle (the AT Command Manager only needs lora_e5_init() to
+ * have completed) -- independent of this library's FSM state, which
+ * starts at OFF every boot regardless of what this reports.
+ *
+ * @param out  Set true if the modem reports "NET, ON" (public network),
+ *             false if "NET, OFF" (private network). Left unchanged
+ *             (not zeroed) on error, since callers should check the
+ *             return code, not infer failure from *out.
+ */
+int lora_e5_mm_get_public_network_mode(bool *out, k_timeout_t timeout);
+
 /* ------------------------------------------------------------------- */
 /* Raw passthrough (debug escape hatch)                                 */
 /* ------------------------------------------------------------------- */
