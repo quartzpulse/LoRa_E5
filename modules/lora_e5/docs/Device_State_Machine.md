@@ -142,10 +142,16 @@ Decisions made when turning this diagram into `samples/device_node/`
    Joined already"` response (§4.5.2), already modeled in this codebase
    (`LORA_E5_MM_TAG_JOIN_ALREADY`) -- but a real-hardware timing test
    showed a post-`start_sync()` `lora_e5_join_sync()` still takes the
-   full ~8s handshake, not that fast path. Leading (not yet isolated)
-   explanation: `CONFIG`'s unconditional `AT+MODE=LWOTAA` reissue on
-   every boot, which spec §4.23 says resets the LoRaWAN stack "when
-   first enter" that mode. So point 6 above still stands as-is: there
+   full ~8s handshake, not that fast path. First candidate explanation
+   (`CONFIG`'s unconditional `AT+MODE=LWOTAA` reissue every boot,
+   spec §4.23) was tested directly on real hardware by temporarily
+   skipping it -- **refuted**, join still took 8033ms with a new
+   DevAddr. Current leading candidate: `AT+RESET` itself clearing
+   volatile OTAA session state, which every test so far has had no way
+   to isolate from (`lora_e5_start_sync()` is the only public path to
+   `READY` and always resets first). See
+   `docs/VERIFICATION_NEEDED.md`'s "Resolved 2026-07-11" section, item
+   5, for the full reasoning. So point 6 above still stands as-is: there
    is currently no verified way to skip `lora_e5_start_sync()`'s
    reset+config or `lora_e5_join_sync()`'s join, even though the
    underlying session survives both an MCU reboot and our own

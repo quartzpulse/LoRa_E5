@@ -459,19 +459,40 @@ should never hit this path.
      (`lora_e5_hf_commands.c`), mapped to a success outcome. This is
      the spec-documented way to detect/benefit from a retained
      session -- not a separate status query.
-  4. **Still open**: why the real 8015 ms join in step 1 didn't hit
-     that path. Spec §4.23 (MODE) is the leading candidate, not yet
-     directly confirmed by an isolated test: `"AT+MODE" command will
-     reset LoRaWAN stack when first enter LWABP/LWOTAA mode` -- this
-     library's `CONFIG` sequence re-issues `AT+MODE=LWOTAA`
-     unconditionally on every boot (`lora_e5_hf_commands.c`), which,
-     if re-issuing the same mode still counts as "entering" it, would
-     explain why `AT+JOIN` never reaches the modem's own "already
-     joined" state: our own CONFIG step resets the stack every time,
-     regardless of what `AT+RESET` itself does. Not yet isolated by a
-     real-hardware test that skips the redundant `AT+MODE=LWOTAA`
-     reissue when already in that mode and checks whether `AT+JOIN`
-     then takes the fast path -- next step if this is revisited.
+  4. **AT+MODE reissue hypothesis tested and REFUTED [Certain, real
+     hardware, 2026-07-11]**. Isolated test: temporarily patched
+     `submit_config_step()` (`lora_e5_modem_manager.c`) to
+     unconditionally skip the `CFG_STEP_MODE` step (no `AT+MODE=LWOTAA`
+     sent at all, every other CONFIG step unchanged), rebuilt/reflashed
+     `samples/device_node`, and timed the resulting
+     `lora_e5_join_sync()` from the `JOINING`/`JOIN_SUCCESS`
+     `STATE_CHANGED` log timestamps: **8033 ms**, statistically
+     identical to the un-patched 8015 ms baseline, with a new DevAddr
+     again (`00096F32`) -- a full fresh OTAA handshake either way.
+     Skipping the `AT+MODE` reissue made no measurable difference.
+     Change fully reverted (`git checkout`) immediately after the
+     measurement -- nothing from this experiment shipped.
+  5. **Leading candidate now**: `AT+RESET` itself, not `CONFIG`. Every
+     test so far that reached a real join always had a `start_sync()`
+     (`AT+RESET` then `CONFIG`) in between the last known-joined state
+     and the join attempt -- `AT+RESET` clearing volatile OTAA session
+     state (negotiated DevAddr/session keys/frame counters) while
+     `AT+ID`/`AT+KEY`-provisioned credentials persist in flash is
+     completely ordinary behavior for a LoRaWAN AT modem, and would
+     mean `"+JOIN: Joined already"` is only reachable by calling
+     `AT+JOIN` twice within the *same* power-up with no intervening
+     `AT+RESET` at all (e.g. an application bug retrying a join call) --
+     not something reachable across an MCU reboot/deep-sleep cycle that
+     always resets the modem via `lora_e5_start_sync()`. **Not yet
+     directly tested** (would need a call sequence that reaches `READY`
+     without ever invoking `AT+RESET` -- not possible through the
+     current public API, since `lora_e5_start_sync()` is the only path
+     to `READY` and it always resets first). If this is revisited: the
+     real question is no longer "how do we skip reset+join," it's
+     "given a real AT+RESET must be sent every boot for this MCU to
+     even talk to a possibly-desynced modem, is a fresh OTAA join on
+     every wake simply the expected, unavoidable cost" -- worth
+     confirming directly with Seeed/the spec rather than assuming.
   Implemented as part of this investigation, independent of the
   answer above and reusable regardless: `struct lora_e5_at_result`
   (`lora_e5_at.h`) gained a `captured_text`/`captured_text_len` field
